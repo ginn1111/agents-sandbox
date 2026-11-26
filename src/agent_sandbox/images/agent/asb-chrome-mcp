@@ -1,0 +1,38 @@
+#!/bin/sh
+# Connect chrome-devtools-mcp to the Host Browser (ADR-0008, ADR-0013), or probe it.
+#
+#   asb-chrome-mcp [mcp args...]   run chrome-devtools-mcp against the host Chrome (an MCP stdio server)
+#   asb-chrome-mcp --probe         print Chrome's version as the Session sees it; used by `asb doctor`
+#
+# The target is fixed: port 9222 on whatever host.docker.internal resolves to, connected BY IP
+# ADDRESS. Chrome rejects DevTools HTTP requests whose Host header is not localhost or an IP
+# address, so a name would fail. Nothing here reads a host, port or URL from arguments or the
+# environment, so a project cannot aim it elsewhere. It only works after `asb browser enable`
+# opened that one port in Netguard; without it the connection is dropped (fail closed).
+# UNVERIFIED: see docs/spikes/host-browser.md.
+set -eu
+
+PORT=9222
+fail() {
+    echo "asb-chrome-mcp: $*" >&2
+    exit 1
+}
+
+out=$(getent ahostsv4 host.docker.internal 2>/dev/null) || out=""
+ip=$(printf '%s\n' "$out" | awk '$1 ~ /^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$/ { print $1; exit }')
+[ -n "$ip" ] || fail "cannot resolve host.docker.internal to an IPv4 address"
+# Never loopback, unspecified, link-local (cloud metadata), multicast or reserved: Netguard would not
+# open those either, and the wrapper must not talk to them.
+printf '%s\n' "$ip" | awk -F. '
+    NF != 4 { exit 1 }
+    { for (i = 1; i <= 4; i++) if ($i !~ /^[0-9]+$/ || $i > 255) exit 1 }
+    $1 == 0 || $1 == 127 || $1 >= 224 { exit 1 }
+    $1 == 169 && $2 == 254 { exit 1 }' || fail "host.docker.internal resolves to $ip, which is not a usable host address"
+
+url="http://$ip:$PORT"
+if [ $# -ge 1 ] && [ "$1" = "--probe" ]; then
+    curl -fsS --max-time 3 "$url/json/version" || fail "Chrome does not answer at $ip:$PORT (is it running, and enabled with \`asb browser enable\`?)"
+    echo
+    exit 0
+fi
+exec chrome-devtools-mcp "--browser-url=$url" "$@"

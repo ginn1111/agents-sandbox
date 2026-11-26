@@ -12,6 +12,7 @@ import sys
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
+from . import host_browser as _hb
 from . import host_services as _hs
 from .config import Config
 from .netguard import IMAGE as NETGUARD_IMAGE
@@ -84,6 +85,8 @@ class SessionPlan:
     portals: list[dict] = field(default_factory=list)
     # This Workspace's Hermes Kanban board, its own volume and env (ADR-0020).
     kanban: dict = field(default_factory=dict)
+    # The Host Browser (ADR-0008, ADR-0013): None when off; otherwise available but never active after `up`.
+    host_browser: dict | None = None
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -238,6 +241,10 @@ def plan(workspace: Path, config: Config, *, uid: int | None = None, gid: int | 
     if config.offline and config.portals:
         warnings.append("offline: the Session has no network, so Portals are unavailable")
 
+    browser, browser_warnings, browser_errors = _hb.plan_entry(config.host_browser, ng_name, workspace)
+    warnings += browser_warnings
+    errors += browser_errors
+
     return SessionPlan(
         workspace=str(workspace),
         container_name=name,
@@ -259,4 +266,5 @@ def plan(workspace: Path, config: Config, *, uid: int | None = None, gid: int | 
         host_services=_hs.plan_entries(config.host_services, ng_name),
         portals=portal_list,
         kanban=kb,
+        host_browser=browser,
     )

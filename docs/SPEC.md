@@ -38,7 +38,7 @@ The README and `check` output must state these limits plainly. Never claim prote
 | `asb shell [DIR]` | Open an interactive Fish shell at `/workspace` in the running Session, without attaching to the Watcher. If no Session is running, exit with an error and tell the user to run `asb up`. Do not start or enable a Host Service, Host Browser, or Portal. |
 | `asb service enable\|disable <name> [DIR]` | Turn one configured Host Service on or off in the running Session's Netguard, without restarting either container. Activation lasts for the current Session only. |
 | `asb portal start\|stop\|restart\|status <name> [DIR]` | Control one configured Portal in the running Session (§8). |
-| `asb browser enable\|disable [DIR]` | Turn the Host Browser on or off in the running Session, if global config or the CLI made it available (§6). |
+| `asb browser enable\|disable [DIR] [--host-browser]` | Turn the Host Browser on or off in the running Session, if global config or `--host-browser` made it available (§6). `enable` opens `host.docker.internal:9222` in Netguard through the helper (ADR-0021). `--host-browser` is also accepted by `check`, `up`, `attach` and `doctor`. |
 | `asb down [DIR]` | Stop and remove the Session and its Netguard. Agent volumes are kept. |
 | `asb ls` | List running Sessions with their Workspace and Portal URLs. |
 | `asb check [DIR]` | Dry run: no container starts. See §5 for the output. |
@@ -126,7 +126,7 @@ Result: Ready
   - DNS is allowed only to the configured resolver.
   - `--add-host=host.docker.internal:host-gateway` is set on Linux; a hostname mapping alone does not grant access.
 - **Host Services:** defined as `host:port` in config. Netguard permits only explicitly activated entries. The agent never gets host credentials through them. Examples: DBX Web (`DBX_WEB_URL`), an LLM gateway.
-- **Host Browser (ADR-0008, ADR-0013):** off by default. Settings come only from global config or the CLI; activation requires the explicit CLI command. `check` warns when it is enabled. You start Chrome yourself with a dedicated `--user-data-dir`; `doctor` prints the command. Agents control it with `chrome-devtools-mcp`.
+- **Host Browser (ADR-0008, ADR-0013, ADR-0021):** off by default. Made available only by global config (`network.host_browser: true`) or `--host-browser`; project config setting the key is rejected. Activation requires `asb browser enable`, which opens `host.docker.internal:9222` (one TCP port) through the Netguard helper. `check`, `up` and `attach` warn on every Session where it is available. You start Chrome yourself with a dedicated `--user-data-dir`; `doctor` prints the command and, on Linux, a `socat` relay bound to the Docker gateway address. Agents control it with `asb-chrome-mcp`, which runs the pinned `chrome-devtools-mcp` against the host by IP address.
 - **`--offline`:** Docker `none` network. No Host Services or Portals.
 
 ## 7. Image contents
