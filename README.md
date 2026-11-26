@@ -6,7 +6,7 @@ What it does:
 
 - Mounts only the Workspace, read-write, at `/workspace`. No home directory, no Docker socket, no SSH agent, no host environment variables, no host agent config.
 - **Masks** Secret files: each one appears empty and read-only inside the Session. The originals on the host are never read or modified.
-- Puts the Session behind **Netguard**, a companion container that blocks the host and private, link-local and LAN ranges. You open individual **Host Services** by hand. The public internet stays open.
+- Puts the Session behind **Netguard**, a companion container that blocks the Docker subnet, gateway and restricted address ranges. You open individual **Host Services** by hand. The public internet stays open.
 
 What it does not do is listed under [Known limits](#known-limits), and `asb check` prints the same list before every Session. In short: this tool does not contain a hijacked or malicious agent, and it does not stop the agent sending Workspace data to the public internet.
 
@@ -51,7 +51,7 @@ asb up ~/src/app     # start the Session (does nothing if it is already running)
 asb attach ~/src/app # open herdr in the Session
 ```
 
-Inside herdr, open panes and start `hermes`, `omp`, `claude` or `codex`. Log in once inside the sandbox: each agent has its own Agent volume (`agent-sandbox-<agent>`) that keeps its login across Sessions and Workspaces. Nothing is imported from your host agent config.
+Inside herdr, open panes and start `hermes`, `omp`, `claude` or `codex`. Log in once inside the sandbox: each agent has its own Agent volume (`agent-sandbox-<agent>`) that keeps its login across Sessions and Workspaces. Nothing is imported from your host agent config. Use `asb-agent <name>` to launch an agent with its configured command and environment. Custom agents use new `agent-sandbox-agent.<name>` volumes; legacy custom volumes are not migrated automatically.
 
 When `DIR` is omitted, every command uses the current directory. The Workspace must not be `/`, your home directory, or a path above it.
 
@@ -250,9 +250,9 @@ This page is the same list `asb check` prints under `Limits:`. These are limits 
 4. Hard links are found only by scanning the Workspace outside Skip patterns; a hard link under a Skip pattern or outside the Workspace is not masked.
 5. The agent can change Workspace files that later run on the host (Makefile, package.json, .git/hooks).
 6. Host Services can return sensitive data; the Host Browser, when enabled, exposes the host's whole network view and host files.
-7. The public internet stays open: the agent can send Workspace data to any public IP address (Netguard blocks the host and private networks, not exfiltration).
+7. The public internet stays open over IPv4, including public IP addresses on the host or LAN. Netguard does not prevent data exfiltration.
 8. Containers share the host kernel.
-9. Agent credentials in Agent volumes are readable by the agent and by anything it runs.
+9. Agent credentials in Agent volumes are readable by the agent and by anything it runs, including other processes in the same Session. Writable Agent and mise volumes are shared across Workspaces and can carry changes into later Sessions.
 10. The inner herdr can set the terminal title and request clipboard writes (OSC 52); turn off clipboard writes from programs in your terminal.
 
 What that means in practice:

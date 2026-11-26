@@ -50,9 +50,9 @@ LIMITS = [
     "Hard links are found only by scanning the Workspace outside Skip patterns; a hard link under a Skip pattern or outside the Workspace is not masked.",
     "The agent can change Workspace files that later run on the host (Makefile, package.json, .git/hooks).",
     "Host Services can return sensitive data; the Host Browser, when enabled, exposes the host's whole network view and host files.",
-    "The public internet stays open: the agent can send Workspace data to any public IP address (Netguard blocks the host and private networks, not exfiltration).",
+    "The public internet stays open over IPv4, including public IP addresses on the host or LAN. Netguard does not prevent data exfiltration.",
     "Containers share the host kernel.",
-    "Agent credentials in Agent volumes are readable by the agent and by anything it runs.",
+    "Agent credentials in Agent volumes are readable by the agent and by anything it runs, including other processes in the same Session. Writable Agent and mise volumes are shared across Workspaces and can carry changes into later Sessions.",
     "The inner herdr can set the terminal title and request clipboard writes (OSC 52); turn off clipboard writes from programs in your terminal.",
 ]
 

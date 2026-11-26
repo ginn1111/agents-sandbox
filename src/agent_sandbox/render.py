@@ -13,7 +13,7 @@ def render(p: SessionPlan) -> str:
     lines.append("Config:    " + (", ".join(p.config_files) if p.config_files else "defaults (no config files found)"))
     lines.append("")
     if p.netguard_name:
-        lines.append(f"Network:   Netguard {p.netguard_name}: host, LAN and private ranges blocked, public internet open, IPv6 off")
+        lines.append(f"Network:   Netguard {p.netguard_name}: Docker subnet, gateway and restricted ranges blocked; public IPv4 open, IPv6 off")
     else:
         lines.append("Network:   offline: no network at all")
     for e in p.entries:
@@ -23,7 +23,7 @@ def render(p: SessionPlan) -> str:
         lines.append("No Secret files found; nothing will be masked.")
     lines.append("")
     if p.host_services:
-        lines.append("Host Services: (all off until enabled; every other host port stays blocked)")
+        lines.append("Host Services: (all off until enabled; each exception permits only its configured destination)")
         for h in p.host_services:
             lines.append(f"  {h['name']} {h['host']}:{h['port']}  (enable: asb service enable {h['name']})")
     else:

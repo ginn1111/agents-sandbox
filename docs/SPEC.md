@@ -188,7 +188,7 @@ portals: { }                      # see ADR-0010
 - The agent can change Workspace files that later run on the host.
 - Host Services can return sensitive data. The Host Browser, when enabled, exposes the host's whole network view and host files.
 - Containers share the host kernel.
-- Agent credentials in Agent volumes are readable by the agent and by anything it runs.
+- Agent credentials in Agent volumes are readable by the agent and by anything it runs, including other processes in the same Session. Writable Agent and mise volumes are shared across Workspaces and can carry changes into later Sessions.
 - The inner herdr can set the terminal title and request clipboard writes (OSC 52). Turn off clipboard writes from programs in your terminal.
 
 ## 12. Tests
