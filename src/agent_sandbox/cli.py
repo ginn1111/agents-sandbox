@@ -12,6 +12,7 @@ from .masks import MaskError
 from .plan import IMAGE, plan
 from .render import render
 from .runtime import Docker, DockerError
+from .unmasked import attach_warnings
 from .workspace import WorkspaceError, resolve_workspace
 
 IMAGE_CONTEXT = Path(__file__).parent / "images" / "agent"
@@ -90,7 +91,9 @@ def main(argv: list[str] | None = None, *, docker: list[str] | None = None) -> i
             _ensure_up(d, _plan_for(args), sys.stdout)
         elif args.command == "attach":
             p = _plan_for(args)
-            _ensure_up(d, p, sys.stdout)
+            if not _ensure_up(d, p, sys.stdout):  # an older Session: Secret files may have appeared since `up`
+                for w in attach_warnings(d, p):
+                    print(f"warning: {w}", file=sys.stderr)
             return d.attach(p.container_name)
         elif args.command == "down":
             p = _plan_for(args)

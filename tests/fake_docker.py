@@ -63,6 +63,9 @@ elif cmd == "inspect":
         sys.exit(1)
     if "{{.State.Running}}" in opt("--format"):  # Netguard readiness: is it still running?
         print("false" if c.get("exited") else "true")
+    elif state.get("inspect_fails"):  # `docker inspect` of the mounts is broken (set after `up`)
+        save()
+        sys.exit(1)
     else:  # `{{json .Mounts}}`: what the mask check reads
         import csv
         mounts = []

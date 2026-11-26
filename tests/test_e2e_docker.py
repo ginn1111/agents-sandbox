@@ -508,3 +508,85 @@ def test_a_project_pinning_another_node_gets_it_through_mise(session, workspace)
     assert dx(session, "claude", "--version", workdir="/workspace").returncode == 0
     # the new version lives in the shared mise volume, not in the read-only image
     assert dx(session, "sh", "-c", f"ls /mise/installs/node | grep -q '^{pinned}'").returncode == 0
+
+
+# ---------------------------------------------------------------------------- ticket 04 (aliases)
+# UNVERIFIED: written on a host without a Docker daemon, so these have never run. See docs/spikes/0004-alias-masking.md.
+
+
+@pytest.fixture
+def alias_session(workspace):
+    (workspace / ".env").write_text("TOKEN=abc\n")
+    os.link(workspace / ".env", workspace / "notes.txt")                      # hard link
+    (workspace / "docs").mkdir()
+    os.link(workspace / ".env", workspace / "docs" / "harmless.md")           # hard link in a subdirectory
+    (workspace / "config").mkdir()
+    (workspace / "config" / "real.cfg").write_text("REAL=1\n")
+    os.symlink("config/real.cfg", workspace / "secrets.json")                 # secret-named symlink, relative
+    (workspace / "store").mkdir()
+    (workspace / "store" / "k").write_text("KEY\n")
+    (workspace / "app").mkdir()
+    os.symlink("../store/k", workspace / "app" / ".env")                      # symlink into a sibling directory
+    outside = workspace.parent / "outside-secret"
+    outside.write_text("OUTSIDE\n")
+    os.symlink(outside, workspace / "credentials.json")                       # points out: never followed
+    assert main(["build"]) == 0
+    assert main(["up", str(workspace)]) == 0
+    name = session_name(workspace.resolve())
+    yield name
+    main(["down", str(workspace)])
+
+
+def test_content_is_unreadable_through_every_alias(alias_session):
+    for rel in (".env", "notes.txt", "docs/harmless.md", "config/real.cfg", "store/k"):
+        r = sh(alias_session, f"wc -c < /workspace/{rel}")
+        assert r.returncode == 0 and r.stdout.strip() == "0", rel
+    for rel in ("secrets.json", "app/.env"):  # reading through the symlink reaches the masked real file
+        assert sh(alias_session, f"cat /workspace/{rel}").stdout == "", rel
+
+
+def test_secret_content_appears_nowhere_in_the_session_workspace(alias_session):
+    r = sh(alias_session, "grep -rIl -e TOKEN=abc -e REAL=1 -e KEY /workspace 2>/dev/null; true")
+    assert r.stdout.strip() == ""
+
+
+def test_aliases_cannot_be_written_or_replaced(alias_session):
+    for rel in ("notes.txt", "docs/harmless.md", "config/real.cfg", "store/k"):
+        assert sh(alias_session, f"echo x > /workspace/{rel}").returncode != 0, rel
+        assert sh(alias_session, f"rm -f /workspace/{rel}").returncode != 0, rel
+
+
+def test_symlink_pointing_outside_dangles_in_the_session_and_nothing_outside_is_mounted(alias_session):
+    assert sh(alias_session, "cat /workspace/credentials.json").returncode != 0
+    assert "outside-secret" not in sh(alias_session, "cat /proc/self/mountinfo").stdout
+
+
+def test_attach_warns_about_a_secret_file_created_after_up(alias_session, workspace, capsys):
+    (workspace / "late").mkdir()
+    (workspace / "late" / ".env.local").write_text("LATE=1\n")
+    import unittest.mock as mock  # `attach` opens an interactive shell after warning; stub only that
+    from agent_sandbox.runtime import Docker
+    with mock.patch.object(Docker, "attach", return_value=0):
+        assert main(["attach", str(workspace)]) == 0
+    assert "late/.env.local" in capsys.readouterr().err
+    assert sh(alias_session, "cat /workspace/late/.env.local").stdout == "LATE=1\n"  # the documented limit
+
+
+def test_up_refuses_when_a_masked_path_became_a_symlinked_directory(workspace, monkeypatch):
+    (workspace / "config").mkdir()
+    (workspace / "config" / "real.env").write_text("S=1\n")
+    os.symlink("config/real.env", workspace / ".env")
+    assert main(["build"]) == 0
+    from agent_sandbox import masks
+    real = masks.check_originals_exist
+
+    def swap(plan):
+        os.rename(workspace / "config", workspace / "config2")
+        os.symlink("config2", workspace / "config")
+        return real(plan)
+
+    monkeypatch.setattr("agent_sandbox.runtime.check_originals_exist", swap)
+    assert main(["up", str(workspace)]) != 0
+    ps = subprocess.run(["docker", "ps", "-aq", "--filter", f"name={session_name(workspace.resolve())}"],
+                        capture_output=True, text=True)
+    assert ps.stdout.strip() == ""

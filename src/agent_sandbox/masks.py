@@ -72,12 +72,29 @@ def prepare_mask_sources(plan: SessionPlan) -> None:
         raise MaskError(f"cannot prepare mask sources: {e}") from e
 
 
+def _refuse_symlinked_parents(ws: Path, rel: str) -> None:
+    """Every mask is mounted at its real path. If a directory on the way is (now) a symlink, Docker may resolve
+    the destination somewhere we did not plan, so refuse instead of guessing (ADR-0004, ticket #4 spike)."""
+    parts = rel.split("/")[:-1]
+    for i in range(len(parts)):
+        sub = "/".join(parts[: i + 1])
+        try:
+            st = os.lstat(ws / sub)
+        except OSError as err:
+            raise MaskError(f"cannot mask {rel}: {err.strerror or err}") from err
+        if stat.S_ISLNK(st.st_mode):
+            raise MaskError(
+                f"cannot mask {rel}: {sub} is a symlink, so the mount destination may not resolve to the planned file; "
+                "run `asb up` again or replace the symlink")
+
+
 def check_originals_exist(plan: SessionPlan) -> None:
     """Docker would create a missing mount point inside the Workspace; refuse instead."""
     ws = Path(plan.workspace)
     for e in plan.entries:
         if e.status != "MASKED":
             continue
+        _refuse_symlinked_parents(ws, e.path)
         try:
             st = os.lstat(ws / e.path)
         except OSError as err:
