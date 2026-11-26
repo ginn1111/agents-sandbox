@@ -170,6 +170,7 @@ def main(argv: list[str] | None = None, *, docker: list[str] | None = None) -> i
             else:  # an older Session: Secret files may have appeared since `up`
                 for w in attach_warnings(d, p):
                     print(f"warning: {w}", file=sys.stderr)
+            host_browser.print_available(p, sys.stderr)
             return d.attach(p.container_name)
         elif args.command == "down":
             p = _plan_for(args)

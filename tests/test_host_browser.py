@@ -135,6 +135,12 @@ def test_up_prints_the_warning_on_every_session_where_it_is_available(workspace,
     assert "already running" in out and WARNING in out + err
 
 
+def test_attach_prints_the_warning_too(workspace, enabled_in_global, docker, capsys):
+    docker.has_image()
+    code, out, err = run(["attach", str(workspace)], docker, capsys)
+    assert WARNING in out + err
+
+
 def test_up_is_silent_about_it_when_it_is_off(workspace, docker, capsys):
     docker.has_image()
     _, out, err = run(["up", str(workspace)], docker, capsys)

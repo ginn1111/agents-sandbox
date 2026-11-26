@@ -14,7 +14,8 @@
 #
 # Nothing from the host (agent config, credentials, shell settings) is copied in.
 # herdr (the Watcher, ADR-0009) is a static binary in /usr/local/bin; its config is /etc/asb/herdr.toml.
-# chrome-devtools-mcp and the shell prompt arrive in later tickets.
+# chrome-devtools-mcp (ADR-0008) is an npm tool; Chrome itself is NOT in the image, it runs on the host.
+# The shell prompt arrives in a later ticket.
 FROM debian:bookworm-slim
 
 ENV DEBIAN_FRONTEND=noninteractive
@@ -57,12 +58,17 @@ RUN MISE_DATA_DIR=/opt/agent-node MISE_CACHE_DIR=/tmp/mise-cache mise install no
 # shebangs to /opt/node so a project's mise-pinned Node never changes how an agent runs.
 COPY wrap-node-bins.sh /usr/local/bin/wrap-node-bins
 RUN chmod 0755 /usr/local/bin/wrap-node-bins \
- && PATH="/opt/node/bin:$PATH" npm install -g --prefix /opt/agents --no-fund --no-audit \
+ && PUPPETEER_SKIP_DOWNLOAD=1 PATH="/opt/node/bin:$PATH" npm install -g --prefix /opt/agents --no-fund --no-audit \
       @anthropic-ai/claude-code @openai/codex @oh-my-pi/pi-coding-agent bun \
-      @dbx-app/mcp-server @usebruno/cli \
+      @dbx-app/mcp-server @usebruno/cli chrome-devtools-mcp \
  && wrap-node-bins /opt/agents/bin /opt/agents/bin-wrapped /opt/node/bin/node \
  && chmod -R a+rX /opt/agents \
  && rm -rf /root/.npm
+
+# ---- asb-chrome-mcp: runs chrome-devtools-mcp against the Host Browser, connecting by IP address to
+# host.docker.internal:9222 (Chrome checks the Host header). Reachable only after `asb browser enable`.
+COPY asb-chrome-mcp /usr/local/bin/asb-chrome-mcp
+RUN chmod 0755 /usr/local/bin/asb-chrome-mcp
 
 # ---- Hermes: its own venv; state goes to $HOME of the Hermes Agent volume, never into the image.
 ENV UV_PYTHON_INSTALL_DIR=/opt/uv-python
