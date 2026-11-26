@@ -109,7 +109,6 @@ def _snippets():
         "portals.<name>.env": f"portals: {{p: {{{port}, env: {{X: y}}}}}}",
         "portals.<name>.open": f"portals: {{p: {{{port}, open: /ui}}}}",
         "portals.<name>.login": f"portals: {{p: {{{port}, command: [x], env: {{U: y, P: z}}, login: {{username: U, password: P}}}}}}",
-        "portals.<name>.secrets": f"portals: {{p: {{{port}, secrets: {{}}}}}}",
     }
 
 
@@ -159,7 +158,7 @@ def test_project_config_exceptions_are_documented_and_true(tmp_path):
     with pytest.raises(ConfigError, match="host_browser"):
         load_config(ws, global_path=tmp_path / "none.yaml")
     (ws / ".agent-sandbox.yaml").write_text("version: 1\nportals: {p: {port: 80, secrets: {x: y}}}\n")
-    with pytest.raises(ConfigError, match="secrets"):
+    with pytest.raises(ConfigError, match="unknown key"):
         load_config(ws, global_path=tmp_path / "none.yaml")
     low = norm(README).lower()
     assert "project config cannot" in low and "host browser" in low

@@ -128,7 +128,6 @@ portals:
 | `portals.<name>.env` | Environment for the Portal. A value of exactly `{generated}` is a random secret created once per Workspace. |
 | `portals.<name>.open` | URL path to print after the address. Must start with `/`. |
 | `portals.<name>.login` | `{username: VAR, password: VAR}`: which `env` variables `portal start` shows as the login. |
-| `portals.<name>.secrets` | Reserved for Portal secrets. Global config only; project config cannot set it. |
 
 A config entry for a Portal or agent with a built-in name replaces the built-in as a whole.
 
@@ -157,7 +156,7 @@ Every match is masked whole: a file is replaced by an empty read-only file, a di
 
 ### Default agents and Portals
 
-Agents (`command` is the command name): `hermes`, `omp`, `claude`, `codex`. The image also has Fish, `git`, `curl`, `bash`, `ripgrep`, `jq`, herdr, Plannotator, `chrome-devtools-mcp`, the DBX MCP server and `bru`. Toolchains come from mise: Node LTS, Python and Go are installed at build time, and a project's `mise.toml` can ask for other versions, which install into the `agent-sandbox-mise` volume.
+Agents (`command` is the command name): `hermes`, `omp`, `claude`, `codex`. The image also has `git`, `curl`, `bash`, `ripgrep`, `jq`, herdr, Plannotator, `chrome-devtools-mcp`, the DBX MCP server and `bru`. Toolchains come from mise: Node LTS, Python and Go are installed at build time, and a project's `mise.toml` can ask for other versions, which install into the `agent-sandbox-mise` volume.
 
 Portals: `plannotator` (port 19432) and `hermes-dashboard` (port 9119).
 

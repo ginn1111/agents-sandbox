@@ -6,6 +6,7 @@ Unknown or invalid keys are rejected, never ignored.
 from __future__ import annotations
 
 import copy
+import math
 import os
 import re
 from dataclasses import dataclass, field
@@ -128,9 +129,13 @@ def _validate_resources(res: Any, label: str) -> dict[str, Any]:
             if not isinstance(v, (str, int)) or isinstance(v, bool) or not _MEMORY.match(str(v)):
                 raise ConfigError(f"{label}: resources.memory must look like 4g, 512m or a byte count")
             out[k] = str(v)
+        elif k == "pids_limit":
+            if isinstance(v, bool) or not isinstance(v, int) or v <= 0:
+                raise ConfigError(f"{label}: resources.pids_limit must be a positive integer")
+            out[k] = v
         else:
-            if isinstance(v, bool) or not isinstance(v, (int, float)) or v <= 0:
-                raise ConfigError(f"{label}: resources.{k} must be a positive number")
+            if isinstance(v, bool) or not isinstance(v, (int, float)) or not math.isfinite(v) or v <= 0:
+                raise ConfigError(f"{label}: resources.{k} must be a positive finite number")
             out[k] = v
     return out
 
@@ -250,11 +255,7 @@ def _validate_portals(portals: Any, label: str, source: str) -> dict[str, dict[s
         if not isinstance(name, str) or not PORTAL_NAME.match(name):
             raise ConfigError(f"{label}: portals.{name}: Portal names must match {PORTAL_NAME.pattern}")
         spec = _expect_map(spec, label, f"portals.{name}")
-        _reject_unknown(spec, {"port", "command", "env", "open", "secrets", "login"}, label, f"portals.{name}.")
-        if "secrets" in spec and source == "project":
-            raise ConfigError(
-                f"{label}: portals.{name}.secrets cannot be set in project config (ADR-0005, ADR-0010)"
-            )
+        _reject_unknown(spec, {"port", "command", "env", "open", "login"}, label, f"portals.{name}.")
         if "port" not in spec:
             raise ConfigError(f"{label}: portals.{name} is missing 'port'")
         _validate_port(spec["port"], label, f"portals.{name}.port")

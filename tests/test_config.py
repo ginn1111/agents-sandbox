@@ -138,7 +138,23 @@ def test_project_config_cannot_set_portal_secrets(env):
     write(ws / ".agent-sandbox.yaml", "version: 1\nportals: {p: {port: 80, env: {TOKEN: abc}}}\n")
     load_config(ws, global_path=gpath)  # a literal env value is fine
     write(ws / ".agent-sandbox.yaml", "version: 1\nportals: {p: {port: 80, secrets: {x: y}}}\n")
-    with pytest.raises(ConfigError, match="secrets"):
+    with pytest.raises(ConfigError, match="unknown key"):
+        load_config(ws, global_path=gpath)
+    write(gpath, "version: 1\nportals: {p: {port: 80, secrets: {x: y}}}\n")
+    with pytest.raises(ConfigError, match="unknown key"):
+        load_config(ws, global_path=gpath)
+
+
+@pytest.mark.parametrize("bad", [
+    "resources: {pids_limit: 1.5}",
+    "resources: {pids_limit: true}",
+    "resources: {cpus: .nan}",
+    "resources: {cpus: .inf}",
+])
+def test_resources_rejects_invalid_pids_limit_and_non_finite_cpus(env, bad):
+    ws, gpath, write = env
+    write(gpath, f"version: 1\n{bad}\n")
+    with pytest.raises(ConfigError):
         load_config(ws, global_path=gpath)
 
 

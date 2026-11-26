@@ -114,7 +114,7 @@ def test_global_config_may_set_a_literal_login(workspace, home):
 
 def test_project_config_still_cannot_set_portal_secrets_key(workspace):
     (workspace / ".agent-sandbox.yaml").write_text("version: 1\nportals: {p: {port: 80, secrets: {x: y}}}\n")
-    with pytest.raises(ConfigError, match="secrets"):
+    with pytest.raises(ConfigError, match="unknown key"):
         load_config(workspace)
 
 
