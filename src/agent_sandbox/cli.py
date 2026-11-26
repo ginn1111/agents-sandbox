@@ -68,9 +68,12 @@ def _doctor_services(docker: Docker, directory: str | None) -> None:
     """Report whether each configured Host Service answers. Needs a Workspace; skipped without one."""
     try:
         p = _plan_for(argparse.Namespace(dir=directory))
-    except (WorkspaceError, ConfigError) as e:
-        if directory is not None:  # an explicit DIR that cannot be used is worth saying
+    except WorkspaceError as e:
+        if directory is not None:  # no usable Workspace in the current directory is normal; an explicit DIR is not
             print(f"FAIL Host Services: {e}")
+        return
+    except ConfigError as e:
+        print(f"FAIL Host Services: {e}")
         return
     for level, text in host_services.doctor_lines(docker, p):
         print(f"{level:<4} {text}")

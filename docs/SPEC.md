@@ -42,7 +42,7 @@ The README and `check` output must state these limits plainly. Never claim prote
 | `asb down [DIR]` | Stop and remove the Session and its Netguard. Agent volumes are kept. |
 | `asb ls` | List running Sessions with their Workspace and Portal URLs. |
 | `asb check [DIR]` | Dry run: no container starts. See §5 for the output. |
-| `asb doctor` | Check Docker and Colima, Python, the images, iptables/nft support and `host.docker.internal`. Print the Host Browser launch command. |
+| `asb doctor [DIR]` | Check Docker and Colima, Python, the images, iptables/nft support and `host.docker.internal`. Report whether each configured Host Service answers (from the Session when it is enabled in a running Session, otherwise from the host). Print the Host Browser launch command. |
 | `asb build` | Build the agent and Netguard images. |
 | `asb update [--only cli\|image\|integrations] [--rollback]` | See ADR-0012. |
 
