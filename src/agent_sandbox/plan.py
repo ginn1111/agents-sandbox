@@ -12,6 +12,7 @@ import sys
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
+from . import host_browser as _hb
 from . import host_services as _hs
 from .config import Config
 from .netguard import IMAGE as NETGUARD_IMAGE
@@ -81,6 +82,8 @@ class SessionPlan:
     # One entry per configured Portal (ADR-0010). Nothing is published by `up`; `asb portal start`
     # publishes one on 127.0.0.1 (ADR-0013, ADR-0018).
     portals: list[dict] = field(default_factory=list)
+    # The Host Browser (ADR-0008, ADR-0013): None when off; otherwise available but never active after `up`.
+    host_browser: dict | None = None
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -233,6 +236,10 @@ def plan(workspace: Path, config: Config, *, uid: int | None = None, gid: int | 
     if config.offline and config.portals:
         warnings.append("offline: the Session has no network, so Portals are unavailable")
 
+    browser, browser_warnings, browser_errors = _hb.plan_entry(config.host_browser, ng_name, workspace)
+    warnings += browser_warnings
+    errors += browser_errors
+
     return SessionPlan(
         workspace=str(workspace),
         container_name=name,
@@ -253,4 +260,5 @@ def plan(workspace: Path, config: Config, *, uid: int | None = None, gid: int | 
         volumes=volumes,
         host_services=_hs.plan_entries(config.host_services, ng_name),
         portals=portal_list,
+        host_browser=browser,
     )

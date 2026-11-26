@@ -14,6 +14,7 @@ from typing import Any
 
 import yaml
 
+from . import host_browser as _hb
 from . import host_services as _hs
 
 PROJECT_FILE = ".agent-sandbox.yaml"
@@ -142,7 +143,7 @@ def _validate_network(net: Any, label: str, source: str) -> dict[str, Any]:
         if source == "project":
             raise ConfigError(
                 f"{label}: network.host_browser cannot be set in project config; "
-                "enable it from global config or the CLI (ADR-0005, ADR-0008)"
+                "enable it from global config or the CLI (--host-browser) (ADR-0005, ADR-0008)"
             )
         if not isinstance(net["host_browser"], bool):
             raise ConfigError(f"{label}: network.host_browser must be true or false")
@@ -166,6 +167,9 @@ def _validate_network(net: Any, label: str, source: str) -> dict[str, Any]:
             if any(s["name"] == item["name"] for s in services):
                 raise ConfigError(f"{label}: network.host_services name '{item['name']}' is listed more than once")
             _validate_port(item["port"], label, f"network.host_services[{i}].port")
+            reserved = _hb.reserved_error(item["name"], item["host"], item["port"])
+            if reserved:
+                raise ConfigError(f"{label}: network.host_services[{i}] {reserved}")
             services.append(dict(item))
         out["host_services"] = services
     return out

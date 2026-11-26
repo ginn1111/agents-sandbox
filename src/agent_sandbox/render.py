@@ -1,6 +1,7 @@
 """Human-readable rendering of a SessionPlan (`asb check`)."""
 from __future__ import annotations
 
+from . import host_browser
 from .plan import SessionPlan
 
 # Project config rules that make masking weaker: they exempt or skip paths.
@@ -27,6 +28,7 @@ def render(p: SessionPlan) -> str:
             lines.append(f"  {h['name']} {h['host']}:{h['port']}  (enable: asb service enable {h['name']})")
     else:
         lines.append("Host Services:  none")
+    lines += host_browser.render_lines(p)
     if p.agents:
         lines.append("Agents:")
         for a in p.agents:
