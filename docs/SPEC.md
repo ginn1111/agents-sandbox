@@ -33,8 +33,12 @@ The README and `check` output must state these limits plainly. Never claim prote
 
 | Command | What it does |
 |---|---|
-| `asb up [DIR]` | Resolve the Workspace, load config, discover and mask Secret files, start Netguard and then the Session container. Start herdr and the Portals, then print the Portal URLs and logins. Does nothing if the Session is already running. |
+| `asb up [DIR]` | Resolve the Workspace, load config, discover and mask Secret files, start Netguard (unless offline), then start the Session and its Watcher. Does not enable any Host Service, Host Browser, or Portal. Does nothing if the Session is already running. |
 | `asb attach [DIR]` | Run `docker exec -it <ctr> herdr`, after `up` if needed. Warn if Secret pattern matches have appeared since `up`, because those files aren't masked. |
+| `asb shell [DIR]` | Open an interactive Fish shell at `/workspace` in the running Session, without attaching to the Watcher. If no Session is running, exit with an error and tell the user to run `asb up`. Do not start or enable a Host Service, Host Browser, or Portal. |
+| `asb service enable\|disable <name> [DIR]` | Turn one configured Host Service on or off in the running Session's Netguard, without restarting either container. Activation lasts for the current Session only. |
+| `asb portal start\|stop\|restart\|status <name> [DIR]` | Control one configured Portal in the running Session (§8). |
+| `asb browser enable\|disable [DIR]` | Turn the Host Browser on or off in the running Session, if global config or the CLI made it available (§6). |
 | `asb down [DIR]` | Stop and remove the Session and its Netguard. Agent volumes are kept. |
 | `asb ls` | List running Sessions with their Workspace and Portal URLs. |
 | `asb check [DIR]` | Dry run: no container starts. See §5 for the output. |
@@ -43,6 +47,8 @@ The README and `check` output must state these limits plainly. Never claim prote
 | `asb update [--only cli\|image\|integrations] [--rollback]` | See ADR-0012. |
 
 When `DIR` is omitted, it defaults to the current directory. Agents aren't CLI commands: you start them as herdr panes inside the Session (ADR-0009).
+
+Host Services, the Host Browser, and Portals require separate, explicit activation commands (ADR-0013). Configuration makes them available for selection; it does not activate them. The CLI never starts host programs.
 
 ## 4. Workspace and container
 
@@ -116,24 +122,26 @@ Result: Ready
 ## 6. Network
 
 - **Netguard (ADR-0003):** one container per Session that holds `NET_ADMIN`. The Session joins its network with `--network container:<netguard>`. IPv6 is disabled. If Netguard can't apply its rules or stops running, the Session has no network, never an open one.
-- **Policy (ADR-0002):** the host and private, link-local and LAN ranges are blocked except for listed Host Services. The public internet is open.
+- **Policy (ADR-0002, ADR-0013):** the host and private, link-local and LAN ranges are blocked except for explicitly activated Host Services and the separately activated Host Browser. The public internet is open.
   - DNS is allowed only to the configured resolver.
-  - `--add-host=host.docker.internal:host-gateway` is set on Linux, and the gateway is open only on listed ports.
-- **Host Services:** listed as `host:port` in config. The agent never gets host credentials through them. Examples: DBX Web (`DBX_WEB_URL`), an LLM gateway.
-- **Host Browser (ADR-0008):** off by default. It can be enabled only from global config or the CLI, and `check` warns about it in every Session. You start Chrome yourself with a dedicated `--user-data-dir`; `doctor` prints the command. Agents control it with `chrome-devtools-mcp`.
+  - `--add-host=host.docker.internal:host-gateway` is set on Linux; a hostname mapping alone does not grant access.
+- **Host Services:** defined as `host:port` in config. Netguard permits only explicitly activated entries. The agent never gets host credentials through them. Examples: DBX Web (`DBX_WEB_URL`), an LLM gateway.
+- **Host Browser (ADR-0008, ADR-0013):** off by default. Settings come only from global config or the CLI; activation requires the explicit CLI command. `check` warns when it is enabled. You start Chrome yourself with a dedicated `--user-data-dir`; `doctor` prints the command. Agents control it with `chrome-devtools-mcp`.
 - **`--offline`:** Docker `none` network. No Host Services or Portals.
 
 ## 7. Image contents
 
-- Agents: Hermes, OMP, Claude Code, Codex, and a shell.
+- Agents: Hermes, OMP, Claude Code, and Codex.
+- The initial agent image ships Fish and Starship. `asb shell` uses an image-provided interactive prompt with an `[asb]` badge, the current directory, and Git branch when available (for example, `[asb] backend on main ❯`). It does not import host shell settings or change the shell used to launch agents or run scripts.
 - Tools: `git`, `curl`, `bash`, `ripgrep`, `jq`, herdr TUI, Plannotator, `chrome-devtools-mcp`, the DBX MCP server, and `bru`.
 - **mise** with global defaults: Node LTS, Python and Go, installed at build time. A project's `mise.toml` can ask for other versions; they install into the `agent-sandbox-mise` volume.
 
 ## 8. Portals (ADR-0010)
 
 - A Portal is defined in config as a container port, an optional background `command`, optional env, and a URL path.
-- Each one is published to the host as `127.0.0.1:<random>:<port>`, and the URL is printed. The CLI never opens a browser.
-- `{generated}` values are per-Workspace secrets, stored by the CLI outside the Workspace.
+- Only explicitly started Portals are published to the host at `127.0.0.1` on a randomly allocated host port. Stopping a Portal releases its host port; the URL may change the next time it starts. `start` prints the current URL and any generated login; `status` shows the current URL while published. The CLI never opens a browser.
+- Each Portal supports `start`, `stop`, `restart`, and `status` without restarting the Session or Netguard (ADR-0013). The CLI manages the service process only if it started that process through the configured `command`; otherwise it manages host publication only. `status` reports publication separately from service state.
+- Portal activation belongs to the current Session. `asb down` unpublishes its Portals and releases their host ports. On the next `asb up`, every Portal starts off and must be started explicitly again. Configuration and `{generated}` logins persist across Sessions; the CLI stores generated secrets per Workspace, outside the Workspace.
 - Built-in entries:
   - **plannotator**, using `PLANNOTATOR_REMOTE=1` and port 19432;
   - **hermes-dashboard**, using `--host 0.0.0.0` with generated basic-auth credentials. `HERMES_KANBAN_BOARD` is set to the Workspace slug. Its Kanban board is for Hermes only.

@@ -103,7 +103,7 @@ A Python CLI, `agent-sandbox` (short alias `asb`), that starts one long-running 
 
 60. As a developer, I want Plannotator inside the sandbox published to `127.0.0.1` on a random host port, so that I can review plans in my browser without exposing it to the network.
 61. As a developer, I want the Hermes dashboard (with its Kanban tab) published the same way, so that I can watch Hermes tasks from my browser.
-62. As a developer, I want the Portal URLs (and generated logins) printed on `up` and listed by `ls`, so that I can open them.
+62. As a developer, I want the Portal URLs (and generated logins) printed by the explicit Portal activation command, and the active Portal URLs listed by `ls`, so that I can open them.
 63. As a developer, I want the CLI never to open a browser by itself, so that it behaves the same over SSH and in herdr panes.
 64. As a developer, I want the Hermes dashboard to require a generated username and password, so that it can listen inside the container safely.
 65. As a developer, I want Portal secrets generated once per Workspace and stored outside the Workspace, so that project config and the repo never contain them.
@@ -155,7 +155,7 @@ Terms follow `GLOSSARY.md`; reasons and trade-offs are in `docs/adr/0001`–`001
   - **Config:** loads defaults, global, project and CLI options; merges by precedence; validates strictly; records the source of each rule.
   - **Discovery:** walks the Workspace and applies Secret, allow and Skip patterns. It resolves symlinks with secret names to their real targets inside the Workspace, finds every hard link to a matched inode, and never follows links outside the Workspace. Returns masked, allowed and skipped entries, each with a reason.
   - **Planner, the main seam:** `plan(workspace, config) → SessionPlan`. A pure function with no Docker calls. SessionPlan contains: the Workspace validation result, mask entries with reasons, the exact argument lists for the Netguard and Session `docker run`, the Netguard rule set, Portal port mappings and generated-secret references, Agent and mise volumes, env, resource limits, warnings and limits text. `asb check` renders it, and `asb check --json` serialises it.
-  - **Runtime:** executes a SessionPlan with the `docker` CLI (create the empty mask file and directory sources, start Netguard, wait until it's ready, start the Session, start the Portal commands and herdr). Also handles `down`, `attach`, `ls` (by container labels) and failure cleanup.
+  - **Runtime:** executes a SessionPlan with the `docker` CLI (create the empty mask file and directory sources, start Netguard, wait until it's ready, start the Session and its Watcher). Also handles `down`, `attach`, `shell`, `ls` (by container labels) and failure cleanup. Optional capabilities require separate, explicit activation (ADR-0013).
   - **Netguard:** an Alpine image with `iptables` and a script. Its inputs are allowed Host Service `host:port` pairs, the DNS resolver and the gateway IP. It applies the rules, disables IPv6, signals ready, then idles. The Session joins with `--network container:<netguard>`. Portal ports and `--add-host` are set on Netguard.
   - **Image:** one Dockerfile containing the agents, herdr, Plannotator, `chrome-devtools-mcp`, the DBX MCP server, `bru`, git tooling and mise with global Node LTS, Python and Go.
   - **Lifecycle:** `build`, plus `update` (CLI upgrade, no-cache rebuild, re-installing herdr integrations in Agent volumes, dated tags, `--rollback`).
@@ -168,7 +168,7 @@ Terms follow `GLOSSARY.md`; reasons and trade-offs are in `docs/adr/0001`–`001
 - **Host Browser (ADR-0008):** opt-in from global config or CLI only. The agent connects to a host Chrome debugging port that the user starts with a dedicated profile. The sandbox never starts host programs.
 - **Portals (ADR-0010):** generic config entries (`port`, optional `command`, `env`, `open`). Published as `127.0.0.1:<random>:<port>`. `{generated}` secrets are kept per Workspace in the CLI's own state. Built-in entries: Plannotator (`PLANNOTATOR_REMOTE=1`, port 19432) and the Hermes dashboard (`--host 0.0.0.0`, generated basic auth, `HERMES_KANBAN_BOARD=<workspace slug>`). OMP is not wired to Kanban.
 - **Update (ADR-0012):** always latest, no pinned versions file; keep one previous build for rollback.
-- **Commands:** `up`, `attach`, `down`, `ls`, `check`, `doctor`, `build`, `update`. Dropped from the original proposal: `<agent>`, `shell`, `ps`, `stop`, `logs`, `import-config`, `init`, allowlist network mode, sanitized copy.
+- **Commands:** `up`, `attach`, `shell`, `down`, `ls`, `check`, `doctor`, `build`, `update`, plus the explicit activation commands `service enable|disable`, `portal start|stop|restart|status` and `browser enable|disable` (ADR-0013). Dropped from the original proposal: `<agent>`, `ps`, `stop`, `logs`, `import-config`, `init`, allowlist network mode, sanitized copy.
 
 ## Testing Decisions
 
