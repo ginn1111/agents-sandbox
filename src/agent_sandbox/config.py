@@ -31,6 +31,11 @@ DEFAULT_AGENTS = {
 }
 
 _MEMORY = re.compile(r"^[1-9][0-9]*[bkmg]?$", re.IGNORECASE)
+# Agent names become Docker volume names and directory names, so keep them plain.
+AGENT_NAME = re.compile(r"^[a-z][a-z0-9_-]{0,31}$")
+ENV_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+# Set by the Session itself; an agent entry may not override them.
+RESERVED_ENV = {"HOME"}
 
 
 class ConfigError(ValueError):
@@ -56,6 +61,8 @@ class Config:
     portals: dict[str, dict[str, Any]]
     offline: bool
     loaded_files: list[str] = field(default_factory=list)
+    # agent name -> env for that agent only (ADR-0007). Absent when the agent has none.
+    agent_env: dict[str, dict[str, str]] = field(default_factory=dict)
     # (config key, value) for every setting that came from project config.
     project_rules: list[tuple[str, str]] = field(default_factory=list)
 
@@ -146,15 +153,37 @@ def _validate_network(net: Any, label: str, source: str) -> dict[str, Any]:
     return out
 
 
-def _validate_agents(agents: Any, label: str) -> dict[str, list[str]]:
+def _validate_agent_env(env: Any, label: str, key: str) -> dict[str, str]:
+    env = _expect_map(env, label, key)
+    out = {}
+    for k, v in env.items():
+        if not isinstance(k, str) or not ENV_NAME.match(k):
+            raise ConfigError(f"{label}: {key} has an invalid variable name {k!r}")
+        if k in RESERVED_ENV:
+            raise ConfigError(f"{label}: {key}.{k} is set by the Session and cannot be overridden")
+        if not isinstance(v, str):
+            raise ConfigError(f"{label}: {key}.{k} must be a string")
+        out[k] = v
+    return out
+
+
+def _validate_agents(agents: Any, label: str) -> dict[str, dict[str, Any]]:
     agents = _expect_map(agents, label, "agents")
     out = {}
     for name, spec in agents.items():
+        if not isinstance(name, str) or not AGENT_NAME.match(name):
+            raise ConfigError(
+                f"{label}: agents.{name}: agent names must match {AGENT_NAME.pattern} "
+                "(they name the Agent volume)"
+            )
         spec = _expect_map(spec, label, f"agents.{name}")
         _reject_unknown(spec, {"command", "env"}, label, f"agents.{name}.")
         if "command" not in spec:
             raise ConfigError(f"{label}: agents.{name} is missing 'command'")
-        out[str(name)] = _validate_str_list(spec["command"], label, f"agents.{name}.command")
+        entry: dict[str, Any] = {"command": _validate_str_list(spec["command"], label, f"agents.{name}.command")}
+        if "env" in spec:
+            entry["env"] = _validate_agent_env(spec["env"], label, f"agents.{name}.env")
+        out[name] = entry
     return out
 
 
@@ -277,10 +306,15 @@ def load_config(
                 cfg.project_rules.append(("network.host_services", f"{svc['name']} {svc['host']}:{svc['port']}"))
         if "host_browser" in net:
             cfg.host_browser = net["host_browser"]
-        for name, command in layer.get("agents", {}).items():
-            cfg.agents[name] = command
+        for name, spec in layer.get("agents", {}).items():
+            cfg.agents[name] = spec["command"]
+            cfg.agent_env.pop(name, None)  # the entry is replaced as a whole, env included
+            if spec.get("env"):
+                cfg.agent_env[name] = dict(spec["env"])
             if source == "project":
-                cfg.project_rules.append((f"agents.{name}", " ".join(command)))
+                cfg.project_rules.append((f"agents.{name}", " ".join(spec["command"])))
+                for key in spec.get("env", {}):  # names only: values may be tokens
+                    cfg.project_rules.append((f"agents.{name}.env", key))
         for name, spec in layer.get("portals", {}).items():
             cfg.portals[name] = spec
             if source == "project":

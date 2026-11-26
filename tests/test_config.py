@@ -152,3 +152,43 @@ def test_cli_cannot_smuggle_unknown_keys(env):
     ws, gpath, _ = env
     with pytest.raises(ConfigError, match="bogus"):
         load_config(ws, global_path=gpath, cli={"bogus": 1})
+
+
+# ---------------------------------------------------------------- agents (ticket 06)
+
+
+def test_default_agents_have_no_env(env):
+    ws, gpath, _ = env
+    cfg = load_config(ws, global_path=gpath)
+    assert set(cfg.agents) == {"hermes", "omp", "claude", "codex"}
+    assert cfg.agent_env == {}
+
+
+def test_agent_env_is_loaded_and_merged_per_agent(env):
+    ws, gpath, write = env
+    write(gpath, "version: 1\nagents:\n  hermes: {command: [hermes], env: {A: '1'}}\n")
+    write(ws / ".agent-sandbox.yaml", "version: 1\nagents:\n  hermes: {command: [hermes, chat], env: {B: '2'}}\n")
+    cfg = load_config(ws, global_path=gpath)
+    assert cfg.agents["hermes"] == ["hermes", "chat"]
+    assert cfg.agent_env["hermes"] == {"B": "2"}  # project entry replaces the global entry
+    assert ("agents.hermes.env", "B") in cfg.project_rules  # key names only, never values
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        "agents: {'../x': {command: [x]}}",
+        "agents: {'Up': {command: [x]}}",
+        "agents: {'a b': {command: [x]}}",
+        "agents: {'': {command: [x]}}",
+        "agents: {x: {command: [x], env: [A]}}",
+        "agents: {x: {command: [x], env: {A: 1}}}",
+        "agents: {x: {command: [x], env: {'1A': a}}}",
+        "agents: {x: {command: [x], env: {'A=B': a}}}",
+    ],
+)
+def test_invalid_agent_names_and_env_are_rejected(env, body):
+    ws, gpath, write = env
+    write(gpath, f"version: 1\n{body}\n")
+    with pytest.raises(ConfigError):
+        load_config(ws, global_path=gpath)
