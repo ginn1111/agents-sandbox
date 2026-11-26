@@ -24,6 +24,10 @@ def run_portal(args, docker: Docker, plan: SessionPlan, out: TextIO) -> int:
         entry = next(e for e in plan.portals if e["name"] == args.name)
         print(f"{args.name} → {url}", file=out)
         print("  Open it in your browser; asb never opens one. It answers on 127.0.0.1 only.", file=out)
+        login = ctl.login(entry)
+        if login:
+            print(f"  Login:    username: {login['username']}  password: {login['password']}", file=out)
+            print(f"  Generated once for this Workspace and kept in {login['store']} (outside the Workspace).", file=out)
         if entry["started_by"] == "agent":
             print("  The agent starts this service itself; asb only publishes the port.", file=out)
     elif args.action == "stop":

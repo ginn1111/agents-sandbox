@@ -99,3 +99,40 @@ def test_check_says_where_the_board_lives(workspace, capsys):
 def test_an_offline_session_still_pins_its_board(workspace):
     p = make_plan(workspace, offline=True)
     assert session_env(p)["HERMES_KANBAN_BOARD"] == p.kanban["board"]
+
+
+# -- `up` creates the board inside the Session (ADR-0020)
+
+import sys  # noqa: E402
+from pathlib import Path  # noqa: E402
+
+sys.path.insert(0, str(Path(__file__).parent))
+from test_portals_cli import pdocker, run  # noqa: E402,F401
+
+
+def board_calls(d):
+    return [c for c in d.calls if c[:1] == ["exec"] and "kanban" in c]
+
+
+def test_up_creates_the_workspace_board_inside_the_session(workspace, pdocker, capsys):
+    code, _, _ = run(["up", str(workspace)], pdocker, capsys)
+    p = make_plan(workspace)
+    assert code == 0
+    (c,) = board_calls(pdocker)
+    assert c[:2] == ["exec", p.container_name]
+    assert c[2:6] == ["hermes", "kanban", "boards", "create"] and c[6] == p.kanban["board"]
+    assert c[c.index("--name") + 1] == "my api"  # the Workspace directory name, for the Kanban tab
+
+
+def test_a_running_session_does_not_create_the_board_again(workspace, pdocker, capsys):
+    run(["up", str(workspace)], pdocker, capsys)
+    run(["up", str(workspace)], pdocker, capsys)
+    assert len(board_calls(pdocker)) == 1
+
+
+def test_a_board_that_cannot_be_created_warns_but_keeps_the_session(workspace, pdocker, capsys):
+    pdocker.set(kanban_fails=True)
+    code, _, err = run(["up", str(workspace)], pdocker, capsys)
+    assert code == 0 and "Kanban board" in err and make_plan(workspace).container_name in pdocker.containers
+    # still isolated: the Kanban home is this Workspace's own volume, so the default board there is its own
+    assert "HERMES_KANBAN_HOME" in json.dumps(pdocker.containers[make_plan(workspace).container_name]["args"])

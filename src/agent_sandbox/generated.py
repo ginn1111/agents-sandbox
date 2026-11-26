@@ -14,9 +14,7 @@ import secrets
 import stat
 from pathlib import Path
 
-from .portals import PortalError
-
-MARKER = "{generated}"
+from .portals import GENERATED as MARKER, PortalError
 
 
 def state_root() -> Path:

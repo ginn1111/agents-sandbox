@@ -1,6 +1,7 @@
 """Executes plans with the `docker` CLI. Argument lists only, never shell strings (ADR-0011)."""
 from __future__ import annotations
 
+import os
 import subprocess
 import time
 from dataclasses import dataclass
@@ -30,12 +31,16 @@ class Docker:
     def __init__(self, command: list[str] | None = None):
         self.command = list(command) if command else ["docker"]
 
-    def run(self, *args: str, check: bool = True, interactive: bool = False) -> Result:
+    def run(self, *args: str, check: bool = True, interactive: bool = False,
+            env: dict[str, str] | None = None) -> Result:
+        """`env` is added to the docker client's own environment, for `docker exec -e NAME` (a bare
+        name takes its value from there), so a secret never appears on a command line."""
         argv = [*self.command, *args]
+        client_env = {**os.environ, **env} if env else None
         try:
             if interactive:
                 return Result(subprocess.call(argv), "", "")
-            p = subprocess.run(argv, capture_output=True, text=True)
+            p = subprocess.run(argv, capture_output=True, text=True, env=client_env)
         except FileNotFoundError as e:
             raise DockerError(f"docker not found ({self.command[0]}); install Docker, Colima or Docker Desktop") from e
         if check and p.returncode != 0:

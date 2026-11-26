@@ -16,9 +16,10 @@ from __future__ import annotations
 
 import json
 import time
+from pathlib import Path
 from typing import TextIO
 
-from . import portals
+from . import generated, portals
 from .plan import SessionPlan
 from .runtime import Docker, DockerError
 
@@ -83,11 +84,12 @@ class PortalController:
             return self.url(entry)  # already on: same URL, nothing re-created
         if not self.d.has_image(portals.IMAGE):
             raise portals.PortalError(f"image {portals.IMAGE} not found; run `asb build` first")
+        env = self._env(entry)  # may refuse (secret store inside the Workspace) before anything starts
         self._unpublish(entry)  # leftovers of a crashed start
         started_process = bool(entry["command"])
         try:
             if started_process:
-                self._start_process(entry)
+                self._start_process(entry, env)
             self._publish(entry)
             return self.url(entry)
         except (DockerError, portals.PortalError) as e:
@@ -140,11 +142,26 @@ class PortalController:
         self.d.run("network", "rm", entry["network"], check=False)
 
     # -- the service the CLI started through `command`
-    def _start_process(self, entry: dict) -> None:
+    def _env(self, entry: dict) -> dict[str, str]:
+        """The Portal's env with `{generated}` values filled in (created once per Workspace, ADR-0020)."""
+        return generated.resolve(self.plan.container_name, Path(self.plan.workspace), entry["name"], entry["env"])
+
+    def login(self, entry: dict) -> dict | None:
+        """The username and password to show for a Portal with a `login`, and where they are kept."""
+        if not entry.get("login") or not generated.names(entry["env"]):
+            return None
+        env = self._env(entry)
+        return {"username": env[entry["login"]["username"]], "password": env[entry["login"]["password"]],
+                "store": str(generated.store_path(self.plan.container_name))}
+
+    def _start_process(self, entry: dict, env: dict[str, str]) -> None:
         session = self.plan.container_name
-        env = [a for k, v in sorted(entry["env"].items()) for a in ("-e", f"{k}={v}")]
-        self.d.run("exec", "-d", "-w", "/workspace", *env, session, "sh", "-c", portals.START_SCRIPT,
-                   portals.pidfile(entry["name"]), *entry["command"])
+        secret = {k: env[k] for k in generated.names(entry["env"])}
+        # literal values go on the command line; generated ones as a bare `-e NAME` whose value
+        # `docker` reads from its own environment, so `ps` on the host never shows them
+        flags = [a for k, v in sorted(env.items()) for a in ("-e", k if k in secret else f"{k}={v}")]
+        self.d.run("exec", "-d", "-w", "/workspace", *flags, session, "sh", "-c", portals.START_SCRIPT,
+                   portals.pidfile(entry["name"]), *entry["command"], env=secret)
         deadline = time.monotonic() + READY_TIMEOUT
         while not self._listening(entry):
             if time.monotonic() >= deadline:
