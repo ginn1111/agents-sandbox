@@ -192,3 +192,56 @@ def test_invalid_agent_names_and_env_are_rejected(env, body):
     write(gpath, f"version: 1\n{body}\n")
     with pytest.raises(ConfigError):
         load_config(ws, global_path=gpath)
+
+
+# --- Portals (ADR-0010, ADR-0013)
+
+
+def test_plannotator_is_a_builtin_portal(env):
+    ws, gpath, _ = env
+    p = load_config(ws, global_path=gpath).portals["plannotator"]
+    assert p["port"] == 19432
+    assert p["env"]["PLANNOTATOR_REMOTE"] == "1"
+    assert p["open"] == "/" and "command" not in p
+
+
+def test_a_portal_entry_with_the_same_name_replaces_the_builtin(env):
+    ws, gpath, write = env
+    write(gpath, "version: 1\nportals: {plannotator: {port: 20000}}\n")
+    assert load_config(ws, global_path=gpath).portals["plannotator"] == {"port": 20000}
+
+
+def test_portals_take_port_command_env_and_open(env):
+    ws, gpath, write = env
+    write(gpath, 'version: 1\nportals:\n  docs: {port: 8080, command: [serve, "8080"], env: {A: "1"}, open: /index.html}\n')
+    assert load_config(ws, global_path=gpath).portals["docs"] == {
+        "port": 8080, "command": ["serve", "8080"], "env": {"A": "1"}, "open": "/index.html"}
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        "portals: {p: {port: 80, bind: 0.0.0.0}}",          # unknown key
+        "portals: {p: {port: 80, open: index.html}}",        # open is a URL path
+        "portals: {p: {port: 80, open: 3}}",
+        "portals: {p: {port: 80, env: {1BAD: x}}}",
+        "portals: {p: {port: 80, env: {A: 1}}}",             # values are strings
+        "portals: {p: {port: 80, env: [A]}}",
+        "portals: {'Bad Name': {port: 80}}",                 # names become container names
+        "portals: {'../x': {port: 80}}",
+        "portals: {p: {port: '80'}}",
+    ],
+)
+def test_invalid_portal_entries_are_rejected(env, body):
+    ws, gpath, write = env
+    write(gpath, f"version: 1\n{body}\n")
+    with pytest.raises(ConfigError):
+        load_config(ws, global_path=gpath)
+
+
+def test_project_portals_are_listed_as_project_rules_including_their_command(env):
+    ws, gpath, write = env
+    write(ws / ".agent-sandbox.yaml", "version: 1\nportals: {docs: {port: 8080, command: [serve, x]}}\n")
+    rules = dict(load_config(ws, global_path=gpath).project_rules)
+    assert rules["portals.docs"] == "port 8080"
+    assert rules["portals.docs.command"] == "serve x"
