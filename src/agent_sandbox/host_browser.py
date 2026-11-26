@@ -1,4 +1,4 @@
-"""The Host Browser (ADR-0008, ADR-0013, ADR-0021): a Chrome the human starts on the host, driven from
+"""The Host Browser (ADR-0008, ADR-0013, ADR-0020): a Chrome the human starts on the host, driven from
 the Session by ``chrome-devtools-mcp``.
 
 Configuration (global config or ``--host-browser``) only makes it *available*; ``asb up`` opens

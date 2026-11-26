@@ -38,7 +38,7 @@ The README and `check` output must state these limits plainly. Never claim prote
 | `asb shell [DIR]` | Open an interactive Fish shell at `/workspace` in the running Session, without attaching to the Watcher. If no Session is running, exit with an error and tell the user to run `asb up`. Do not start or enable a Host Service, Host Browser, or Portal. |
 | `asb service enable\|disable <name> [DIR]` | Turn one configured Host Service on or off in the running Session's Netguard, without restarting either container. Activation lasts for the current Session only. |
 | `asb portal start\|stop\|restart\|status <name> [DIR]` | Control one configured Portal in the running Session (§8). |
-| `asb browser enable\|disable [DIR] [--host-browser]` | Turn the Host Browser on or off in the running Session, if global config or `--host-browser` made it available (§6). `enable` opens `host.docker.internal:9222` in Netguard through the helper (ADR-0021). `--host-browser` is also accepted by `check`, `up`, `attach` and `doctor`. |
+| `asb browser enable\|disable [DIR] [--host-browser]` | Turn the Host Browser on or off in the running Session, if global config or `--host-browser` made it available (§6). `enable` opens `host.docker.internal:9222` in Netguard through the helper (ADR-0020). `--host-browser` is also accepted by `check`, `up`, `attach` and `doctor`. |
 | `asb down [DIR]` | Stop and remove the Session and its Netguard. Agent volumes are kept. |
 | `asb ls` | List running Sessions with their Workspace and Portal URLs. |
 | `asb check [DIR]` | Dry run: no container starts. See §5 for the output. |

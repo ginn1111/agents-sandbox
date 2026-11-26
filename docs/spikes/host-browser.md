@@ -1,4 +1,4 @@
-# Spike: Host Browser through `asb browser enable` (ticket #11, ADR-0008, ADR-0013, ADR-0021)
+# Spike: Host Browser through `asb browser enable` (ticket #11, ADR-0008, ADR-0013, ADR-0020)
 
 **Status: UNVERIFIED.** Written on a host with no Docker daemon and no Chrome run, so nothing below was run. Each item is an assumption, how the design fails closed if it is wrong, and the check that settles it. Run `uv run python -m pytest -m docker tests/test_e2e_host_browser.py` on Linux Docker and on Colima (Docker Desktop if available), then replace each **Result:** line. The ticket's spike question (how the debugging port is reachable from the Session on Linux and Colima: loopback bind and Host-header check) is answered below as a design, to be confirmed by items 1–3.
 
@@ -12,7 +12,7 @@
 
 ## 2. DevTools requests must carry an IP-address Host header
 
-- Assumption: Chrome answers `/json/version` and the WebSocket upgrade only when the `Host` header is `localhost` or an IP address, and answers 500 ("Host header is specified and is not an IP address or localhost") for a name such as `host.docker.internal`. `asb-chrome-mcp` therefore resolves the name itself and connects to `http://<ip>:9222` (ADR-0021).
+- Assumption: Chrome answers `/json/version` and the WebSocket upgrade only when the `Host` header is `localhost` or an IP address, and answers 500 ("Host header is specified and is not an IP address or localhost") for a name such as `host.docker.internal`. `asb-chrome-mcp` therefore resolves the name itself and connects to `http://<ip>:9222` (ADR-0020).
 - Also unverified: `webSocketDebuggerUrl` in `/json/version` carries `ws://127.0.0.1:9222/...` or the request's Host. `chrome-devtools-mcp --browser-url` fetches `/json/version` and then connects to the URL Chrome returns. If Chrome returns `127.0.0.1`, the MCP would connect to the Session's own loopback and fail. If that happens, switch the wrapper to `--ws-endpoint=ws://<ip>:9222/devtools/browser/<id>` (read from `/json/version` and with the host part replaced), still by IP; do not loosen Netguard.
 - Fails closed: a refused or malformed answer means the MCP cannot connect; no other path opens.
 - Check: `test_the_wrapper_probe_gets_chrome_s_version_by_ip` (stand-in that applies Chrome's Host rule), `test_an_agent_can_open_a_page_in_host_chrome_through_the_mcp` (real Chrome).

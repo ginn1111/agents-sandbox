@@ -1,4 +1,4 @@
-"""Seam 2: the Host Browser on a real Docker daemon (ADR-0008, ADR-0013, ADR-0021). Skipped without one.
+"""Seam 2: the Host Browser on a real Docker daemon (ADR-0008, ADR-0013, ADR-0020). Skipped without one.
 
 UNVERIFIED: written on a host with no Docker daemon, so none of this has run. The assumptions behind it
 are in docs/spikes/host-browser.md. Run `uv run python -m pytest -m docker tests/test_e2e_host_browser.py`

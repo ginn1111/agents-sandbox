@@ -1,4 +1,4 @@
-"""Seam 1: the Host Browser (ADR-0008, ADR-0013, ADR-0021). No Docker, no Chrome.
+"""Seam 1: the Host Browser (ADR-0008, ADR-0013, ADR-0020). No Docker, no Chrome.
 
 Covers who may make it available, what `check`/`up`/`browser enable` say, what `browser enable|disable`
 runs (one Netguard helper call, nothing else), what `doctor` prints, and that the CLI never runs
