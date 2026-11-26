@@ -329,6 +329,15 @@ def test_the_launch_command_never_uses_an_everyday_chrome_profile(home):
         assert str(home) in cmd  # under the user's state directory, away from any Workspace
 
 
+def test_the_launch_command_never_widens_chrome_s_own_checks(home):
+    # Chrome binds 127.0.0.1 and refuses foreign Origins on its own; the command must not undo either.
+    for platform in ("linux", "darwin"):
+        cmd = host_browser.launch_command(platform=platform)
+        assert "--remote-debugging-address" not in cmd
+        assert "--remote-allow-origins" not in cmd
+        assert "0.0.0.0" not in cmd
+
+
 def test_the_launch_command_names_the_right_binary_per_platform(home):
     assert host_browser.launch_command(platform="linux").startswith("google-chrome ")
     assert host_browser.launch_command(platform="darwin").startswith(

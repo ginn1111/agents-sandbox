@@ -8,6 +8,7 @@
 - Design: `asb doctor` prints `socat TCP-LISTEN:9222,bind=<bridge gateway>,fork,reuseaddr TCP:127.0.0.1:9222`, bound to the gateway address only, never `0.0.0.0`. The human runs it; the CLI never does. The gateway comes from `docker network inspect bridge`; an address `relay_command` does not accept (loopback, `0.0.0.0`, link-local, junk) yields a placeholder instead of a command.
 - Fails closed: with no relay nothing answers; `doctor` (after `enable`) reports "does not answer from the Session". Nothing is widened.
 - Check: `test_an_agent_can_open_a_page_in_host_chrome_through_the_mcp` (starts Chrome and `socat` itself, as the human would; skips without them).
+- Source reading (not a run): `chrome/browser/devtools/remote_debugging_server.cc` (Chromium main) listens with `ListenWithAddressAndPort("127.0.0.1", port)` and falls back to `"::1"`; it never binds a non-loopback address unless told to. The same file refuses to start the server on the default user-data-dir (`NotStartedReason::kDisabledByDefaultUserDataDir`, Chrome 136+), so the dedicated `--user-data-dir` in the launch command is required for the port to open at all, not only for privacy.
 - Result: _not run_.
 
 ## 2. DevTools requests must carry an IP-address Host header
@@ -15,6 +16,11 @@
 - Assumption: Chrome answers `/json/version` and the WebSocket upgrade only when the `Host` header is `localhost` or an IP address, and answers 500 ("Host header is specified and is not an IP address or localhost") for a name such as `host.docker.internal`. `asb-chrome-mcp` therefore resolves the name itself and connects to `http://<ip>:9222` (ADR-0020).
 - Also unverified: `webSocketDebuggerUrl` in `/json/version` carries `ws://127.0.0.1:9222/...` or the request's Host. `chrome-devtools-mcp --browser-url` fetches `/json/version` and then connects to the URL Chrome returns. If Chrome returns `127.0.0.1`, the MCP would connect to the Session's own loopback and fail. If that happens, switch the wrapper to `--ws-endpoint=ws://<ip>:9222/devtools/browser/<id>` (read from `/json/version` and with the host part replaced), still by IP; do not loosen Netguard.
 - Fails closed: a refused or malformed answer means the MCP cannot connect; no other path opens.
+- Source reading (not a run), `content/browser/devtools/devtools_http_handler.cc` (Chromium main):
+  - `RequestIsSafeToServe` serves an HTTP or WebSocket request only if the `Host` header is empty, an IP address, or a local host name (`localhost`). `host.docker.internal` is refused; `172.17.0.1:9222` is accepted. This confirms the by-IP design.
+  - `/json/version` builds `webSocketDebuggerUrl` as `ws://<request Host header><browser path>`. Because the wrapper connects to `http://<ip>:9222`, the URL Chrome returns is `ws://<ip>:9222/devtools/browser/<id>`, reachable through the same Netguard rule. The `--ws-endpoint` fallback above should not be needed.
+  - The WebSocket upgrade is refused if it carries an `Origin` header that is neither the server's own IP nor listed in `--remote-allow-origins`. Puppeteer (Node `ws`), used by `chrome-devtools-mcp`, sends no `Origin`, so no `--remote-allow-origins` flag is needed. Do **not** add `--remote-allow-origins=*` to the launch command: that would let any web page the human visits drive the debugging port.
+- `chrome-devtools-mcp` 1.14.0 (the pinned version) connects with `puppeteer.connect({browserURL})` when given `--browser-url` (`BrowserManager.js#connect`), i.e. it fetches `/json/version` and follows `webSocketDebuggerUrl`. Read from the published package, not run.
 - Check: `test_the_wrapper_probe_gets_chrome_s_version_by_ip` (stand-in that applies Chrome's Host rule), `test_an_agent_can_open_a_page_in_host_chrome_through_the_mcp` (real Chrome).
 - Result: _not run_.
 
@@ -49,3 +55,27 @@
 - Assumption: `npm install -g --prefix /opt/agents chrome-devtools-mcp` works with Node LTS and `wrap-node-bins` pins its shebang to `/opt/node`, so it runs when a project pins another Node through mise. It needs no Chrome binary when connecting with `--browser-url` (it uses `puppeteer-core`). If the package downloads a browser in a postinstall step, the image would grow: check `docker image history` and set `PUPPETEER_SKIP_DOWNLOAD=1` if so.
 - Check: `test_the_image_has_chrome_devtools_mcp_and_no_chrome`.
 - Result: _not run_.
+
+## Manual check (exact steps)
+
+Run these once on each platform, then fill in the **Result:** lines above. The CLI never runs Chrome or `socat`; you do.
+
+### Linux Docker
+
+1. `uv run asb build`, then write `network: {host_browser: true}` (with `version: 1`) to `~/.config/agent-sandbox/config.yaml`, or pass `--host-browser` to every command below.
+2. `uv run asb check <ws>` and `uv run asb up <ws>`: both print the warning "agent controls host Chrome: intranet and file:/// reachable".
+3. `uv run asb doctor <ws>`: copy the Chrome command and the `socat` relay command it prints. Run Chrome; check `ss -ltnp | grep 9222` shows `127.0.0.1:9222` only (item 1). Run the relay; `ss -ltnp | grep 9222` now also shows `<gateway>:9222` (e.g. `172.17.0.1`), never `0.0.0.0`.
+4. Before enabling: `docker exec asb-<…> asb-chrome-mcp --probe` fails (Netguard drops it).
+5. `uv run asb browser enable <ws>`; then the probe prints Chrome's `/json/version` with `webSocketDebuggerUrl` starting `ws://<gateway>:9222/` (item 2).
+6. `docker exec asb-<…> curl -s -H 'Host: host.docker.internal' http://<gateway>:9222/json/version` answers 500 "Host header is specified and is not an IP address or localhost" (item 2).
+7. `docker exec asb-<…> bash -c 'exec 3<>/dev/tcp/<gateway>/22'` (or any other listening host port) still fails (item 4).
+8. In the Session: `claude mcp add chrome-devtools -- asb-chrome-mcp`, ask the agent to open `https://example.com`; the tab appears in the host Chrome window.
+9. `uv run asb browser disable <ws>`; the probe fails again. `uv run asb down <ws>`.
+10. Or run all of it at once: `uv run python -m pytest -m docker tests/test_e2e_host_browser.py` (the real-Chrome test needs `google-chrome` and `socat` on the host).
+
+### Colima (macOS)
+
+Same steps, except step 3: `doctor` prints no relay on macOS. Start Chrome with the printed command (it binds `127.0.0.1:9222` on macOS). After `asb browser enable`, run the probe (step 5):
+
+- If it answers, Lima forwards `host.docker.internal` (`192.168.5.2` by default) to macOS loopback and no relay is needed: record it in item 3.
+- If it does not, record the Colima network mode (`colima status`, `--network-address` or not) and whether a relay bound to the address `host.docker.internal` resolves to on macOS fixes it; then make `doctor` print that relay for macOS too (code change, ADR-0020 consequence). Do not bind Chrome or the relay to `0.0.0.0`.
