@@ -183,12 +183,12 @@ def test_attach_warns_listing_secret_files_that_appeared_after_up(workspace, doc
     assert ".env," not in err and err.count("late-alias.txt") == 1
 
 
-def test_attach_still_opens_the_shell_after_warning(workspace, docker, capsys):
+def test_attach_still_opens_herdr_after_warning(workspace, docker, capsys):
     touch(workspace, ".env")
     started(workspace, docker, capsys)
     touch(workspace, ".env.local")
     attach(workspace, docker, capsys)
-    assert docker.calls[-1][0] == "exec" and "bash" in docker.calls[-1]
+    assert docker.calls[-1][0] == "exec" and "herdr" in docker.calls[-1]
 
 
 def test_attach_is_quiet_when_nothing_new_appeared(workspace, docker, capsys):
