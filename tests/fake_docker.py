@@ -40,12 +40,28 @@ elif cmd == "image" and args[1] == "inspect":
 elif cmd == "build":
     state["images"].append(opt("-t")[0])
 elif cmd == "run":
-    name = opt("--name")[0]
-    labels = dict(l.split("=", 1) for l in opt("--label"))
-    state["containers"][name] = {"labels": labels, "args": args}
+    names = opt("--name")
+    name = names[0] if names else None
+    if name and name in state.get("fail_run", []):
+        print("run refused", file=sys.stderr)
+        save()
+        sys.exit(125)
+    if name:
+        labels = dict(l.split("=", 1) for l in opt("--label"))
+        state["containers"][name] = {"labels": labels, "args": args}
+        if name.endswith("-netguard") and state.get("netguard_exits"):
+            state["containers"][name]["exited"] = True
     print("deadbeef")
 elif cmd == "rm":
     state["containers"].pop(args[-1], None)
+elif cmd == "inspect":
+    c = state["containers"].get(args[-1])
+    if c is None:
+        save()
+        sys.exit(1)
+    print("false" if c.get("exited") else "true")
+elif cmd == "logs":
+    print("netguard: fake log line", file=sys.stderr)
 elif cmd == "ps":
     for name, c in state["containers"].items():
         ok = True
@@ -56,8 +72,16 @@ elif cmd == "ps":
                 ok &= lk in c["labels"] and (not lv or c["labels"][lk] == lv)
             elif key == "name":
                 ok &= val.strip("^$") == name
-        if ok:
+        if c.get("exited") and "-a" not in args:
+            ok = False
+        if ok and "{{.Names}}" in opt("--format"):
+            print(name)
+        elif ok:
             print(f"{name}\t{c['labels'].get('agent-sandbox.workspace', '')}")
 elif cmd == "exec":
-    pass
+    # readiness probe: `docker exec <netguard> test -f /run/netguard/ready`
+    c = state["containers"].get(args[1])
+    if "test" in args and (c is None or c.get("exited") or not state.get("netguard_ready", True)):
+        save()
+        sys.exit(1)
 save()

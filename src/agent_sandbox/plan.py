@@ -8,10 +8,13 @@ from __future__ import annotations
 import hashlib
 import os
 import re
+import sys
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
 from .config import Config
+from .netguard import IMAGE as NETGUARD_IMAGE
+from .netguard import RULES_ENV, rules as netguard_rules
 
 IMAGE = "agent-sandbox-agent:latest"
 FALLBACK_UID = 1000
@@ -23,6 +26,7 @@ LIMITS = [
     "Files created after `up`, or under Skip patterns, are not masked.",
     "The agent can change Workspace files that later run on the host (Makefile, package.json, .git/hooks).",
     "Host Services can return sensitive data; the Host Browser, when enabled, exposes the host's whole network view and host files.",
+    "The public internet stays open: the agent can send Workspace data to any public IP address (Netguard blocks the host and private networks, not exfiltration).",
     "Containers share the host kernel.",
     "Agent credentials in Agent volumes are readable by the agent and by anything it runs.",
     "The inner herdr can set the terminal title and request clipboard writes (OSC 52); turn off clipboard writes from programs in your terminal.",
@@ -40,6 +44,10 @@ class SessionPlan:
     warnings: list[str] = field(default_factory=list)
     limits: list[str] = field(default_factory=lambda: list(LIMITS))
     result: str = "Ready"
+    netguard_name: str | None = None
+    netguard_image: str | None = None
+    netguard_run: list[str] | None = None
+    netguard_rules: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -74,18 +82,50 @@ def _external_git_warnings(workspace: Path) -> list[str]:
     return []
 
 
-def plan(workspace: Path, config: Config, *, uid: int | None = None, gid: int | None = None) -> SessionPlan:
+def _netguard_run(name: str, workspace: Path, platform: str) -> list[str]:
+    """`docker run` for the Netguard container (ADR-0003).
+
+    It alone holds NET_ADMIN. It runs as root because a non-root process gets no effective
+    capabilities, so iptables could not run; the Session is the non-root one. Everything Docker
+    refuses on a container that joins another's network (hostname, add-host, sysctls, published
+    ports) is set here.
+    """
+    args = [
+        "run", "-d",
+        "--name", name,
+        "--hostname", "asb",
+        "--label", "agent-sandbox=netguard",
+        "--label", f"agent-sandbox.workspace={workspace}",
+        "--read-only",
+        "--tmpfs", "/run",
+        "--user", "0:0",
+        "--cap-drop", "ALL", "--cap-add", "NET_ADMIN",
+        "--security-opt", "no-new-privileges",
+        "--cpus", "0.5", "--memory", "64m", "--pids-limit", "64",
+        "--sysctl", "net.ipv6.conf.all.disable_ipv6=1",
+        "--sysctl", "net.ipv6.conf.default.disable_ipv6=1",
+        "--env", RULES_ENV + "=" + ";".join(netguard_rules()),
+    ]
+    if platform == "linux":  # Docker Desktop and Colima resolve this name themselves
+        args += ["--add-host", "host.docker.internal:host-gateway"]
+    return args + [NETGUARD_IMAGE]
+
+
+def plan(workspace: Path, config: Config, *, uid: int | None = None, gid: int | None = None,
+         platform: str | None = None) -> SessionPlan:
     workspace = Path(workspace).resolve()
     uid = os.getuid() if uid is None else uid
     gid = os.getgid() if gid is None else gid
     if uid == 0:  # never run the agent as root, even when the host user is root
         uid, gid = FALLBACK_UID, FALLBACK_UID
     name = session_name(workspace)
+    platform = sys.platform if platform is None else platform
+    ng_name = None if config.offline else f"{name}-netguard"
 
     args = [
         "run", "-d",
         "--name", name,
-        "--hostname", "asb",
+        *(["--hostname", "asb"] if ng_name is None else []),  # a joined network namespace owns it
         "--label", "agent-sandbox=session",
         "--label", f"agent-sandbox.workspace={workspace}",
         "--read-only",
@@ -96,7 +136,7 @@ def plan(workspace: Path, config: Config, *, uid: int | None = None, gid: int | 
         "--cpus", str(config.resources["cpus"]),
         "--memory", str(config.resources["memory"]),
         "--pids-limit", str(config.resources["pids_limit"]),
-        "--network", "none",
+        "--network", "none" if ng_name is None else f"container:{ng_name}",
         "--env", "HOME=/tmp",
         "--mount", _mount_arg(workspace, "/workspace"),
         "-w", "/workspace",
@@ -104,7 +144,6 @@ def plan(workspace: Path, config: Config, *, uid: int | None = None, gid: int | 
     ]
 
     warnings = [
-        "No Netguard yet: the Session has no network at all (fail closed).",
         "Secret files are not masked yet: every file in the Workspace, including .env and "
         ".git/config, is readable and writable by the agent.",
     ]
@@ -118,4 +157,8 @@ def plan(workspace: Path, config: Config, *, uid: int | None = None, gid: int | 
         project_rules=list(config.project_rules),
         session_run=args,
         warnings=warnings,
+        netguard_name=ng_name,
+        netguard_image=None if ng_name is None else NETGUARD_IMAGE,
+        netguard_run=None if ng_name is None else _netguard_run(ng_name, workspace, platform),
+        netguard_rules=[] if ng_name is None else netguard_rules(),
     )

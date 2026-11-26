@@ -50,9 +50,22 @@ class FakeDocker:
     def containers(self):
         return self._state()["containers"]
 
-    def has_image(self, name="agent-sandbox-agent:latest"):
+    def has_image(self, *names):
+        """Make the images exist: the agent and Netguard images by default."""
         s = self._state()
-        s["images"].append(name)
+        s["images"] += list(names) or ["agent-sandbox-agent:latest", "agent-sandbox-netguard:latest"]
+        self._write(s)
+
+    def set(self, **flags):
+        """netguard_ready=False, netguard_exits=True, fail_run=[container names to refuse]: how the fake behaves."""
+        s = self._state()
+        s.update(flags)
+        self._write(s)
+
+    def kill(self, name):
+        """The container stops but stays known to `ps -a`, like a killed Netguard."""
+        s = self._state()
+        s["containers"][name]["exited"] = True
         self._write(s)
 
     def stop_daemon(self):

@@ -2,10 +2,16 @@
 from __future__ import annotations
 
 import subprocess
+import time
 from dataclasses import dataclass
 from pathlib import Path
 
+from .netguard import READY_FILE
 from .plan import IMAGE, SessionPlan
+
+
+READY_TIMEOUT = 20.0  # seconds Netguard gets to apply and verify its rules
+READY_POLL = 0.2
 
 
 class DockerError(RuntimeError):
@@ -60,19 +66,50 @@ class Docker:
     def is_running(self, name: str) -> bool:
         return bool(self.running_sessions(name))
 
+    def container_running(self, name: str) -> bool:
+        r = self.run("ps", "--filter", f"name=^{name}$", "--format", "{{.Names}}")
+        return name in r.out.split()
+
+    def _wait_netguard_ready(self, name: str) -> None:
+        """Block until Netguard has applied and verified its rules. Fail closed on exit or timeout."""
+        deadline = time.monotonic() + READY_TIMEOUT
+        while True:
+            if self.run("exec", name, "test", "-f", READY_FILE, check=False).code == 0:
+                return
+            state = self.run("inspect", "--format", "{{.State.Running}}", name, check=False)
+            if state.code != 0 or state.out.strip() != "true":
+                log = self.run("logs", "--tail", "20", name, check=False)
+                detail = (log.err or log.out).strip()
+                raise DockerError(f"Netguard {name} exited before it was ready" + (f": {detail}" if detail else ""))
+            if time.monotonic() >= deadline:
+                raise DockerError(f"Netguard {name} was not ready after {READY_TIMEOUT:g}s; the Session was not started")
+            time.sleep(READY_POLL)
+
     def start(self, plan: SessionPlan) -> None:
-        """Start the Session. Fails closed: a partial start is removed."""
+        """Start Netguard, wait until it is ready, then the Session. Fails closed: a partial start is removed.
+
+        The Session joins Netguard's network, so it never runs without Netguard's rules in place.
+        """
         self.require_daemon()
-        if not self.has_image(plan.image):
-            raise DockerError(f"image {plan.image} not found; run `asb build` first")
+        wanted = [plan.image] + ([plan.netguard_image] if plan.netguard_run else [])
+        for image in wanted:
+            if not self.has_image(image):
+                raise DockerError(f"image {image} not found; run `asb build` first")
         try:
+            if plan.netguard_run:
+                self.run("rm", "-f", plan.netguard_name, check=False)  # a leftover from a crashed run
+                self.run(*plan.netguard_run)
+                self._wait_netguard_ready(plan.netguard_name)
             self.run(*plan.session_run)
         except DockerError:
-            self.run("rm", "-f", plan.container_name, check=False)
+            self.stop(plan)
             raise
 
-    def stop(self, name: str) -> None:
-        self.run("rm", "-f", name)
+    def stop(self, plan: SessionPlan) -> None:
+        """Remove the Session first, then its Netguard."""
+        self.run("rm", "-f", plan.container_name, check=False)
+        if plan.netguard_name:
+            self.run("rm", "-f", plan.netguard_name, check=False)
 
     def attach(self, name: str) -> int:
         return self.run("exec", "-it", "-w", "/workspace", name, "bash", interactive=True).code

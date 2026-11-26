@@ -65,10 +65,10 @@ def test_resource_limits_come_from_config(workspace):
     assert flag_values(args, "--pids-limit") == ["64"]
 
 
-def test_session_has_no_network_until_netguard_exists(workspace):
+def test_session_network_is_netguards_never_the_default_bridge(workspace):
     p = make_plan(workspace)
-    assert flag_values(p.session_run, "--network") == ["none"]
-    assert any("Netguard" in w for w in p.warnings)
+    assert flag_values(p.session_run, "--network") == [f"container:{p.netguard_name}"]
+    assert flag_values(make_plan(workspace, offline=True).session_run, "--network") == ["none"]
 
 
 def test_masking_gap_is_disclosed(workspace):
