@@ -218,6 +218,50 @@ def test_up_refuses_a_blocked_plan_before_touching_docker(workspace, docker, cap
     assert docker.calls == []
 
 
+@pytest.mark.parametrize("metadata", [
+    [{"Destination": []}],
+    [{"Destination": "/workspace/.env", "Type": "volume", "RW": False}],
+    [{"Destination": "/workspace/.env", "Type": "bind", "RW": False, "Source": None}],
+    [{"Destination": "/workspace/.env"}, {"Destination": "/workspace/.env"}],
+])
+def test_up_rejects_invalid_mask_inspection_metadata(workspace, docker, capsys, monkeypatch, metadata):
+    import json
+    from agent_sandbox.runtime import Docker, Result
+
+    touch(workspace, ".env")
+    docker.has_image()
+    run = Docker.run
+
+    def inspect(self, *args, **kwargs):
+        if args[:3] == ("inspect", "--format", "{{json .Mounts}}"):
+            return Result(0, json.dumps(metadata), "")
+        return run(self, *args, **kwargs)
+
+    monkeypatch.setattr(Docker, "run", inspect)
+    code, _, err = up(workspace, docker, capsys)
+    assert code != 0 and "mount" in err
+    assert docker.containers == {}
+
+
+def test_mask_preparation_rejects_a_redirected_source_directory(workspace, tmp_path, monkeypatch):
+    from pathlib import Path
+    from agent_sandbox.masks import MaskError, prepare_mask_sources
+
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    touch(workspace, ".env")
+    p = make_plan(workspace)
+    parent = Path(p.mask_sources["file"]).parent
+    parent.parent.mkdir(parents=True)
+    redirected = workspace / "state"
+    redirected.mkdir()
+    sentinel = touch(redirected, "empty-file", "keep")
+    parent.symlink_to(redirected, target_is_directory=True)
+
+    with pytest.raises(MaskError, match="mask source"):
+        prepare_mask_sources(p)
+    assert sentinel.read_text() == "keep"
+
+
 def test_up_fails_when_mask_sources_cannot_be_prepared(secret_ws, docker, capsys, home):
     docker.has_image()
     state = home / ".local"

@@ -231,6 +231,23 @@ def test_symlinked_directory_is_not_descended_into(workspace, home):
     assert masked(make_plan(workspace)) == {}
 
 
+def test_indeterminate_alias_target_type_blocks_the_plan(workspace, monkeypatch):
+    project(workspace, "secrets: {mask: ['vault/']}\n")
+    touch(workspace, "store/readme.txt")
+    (workspace / "vault").symlink_to("store")
+    realpath = os.path.realpath
+
+    def resolve(path, *args, **kwargs):
+        if os.fspath(path) == str(workspace / "vault"):
+            raise PermissionError(13, "denied")
+        return realpath(path, *args, **kwargs)
+
+    monkeypatch.setattr(os.path, "realpath", resolve)
+    p = make_plan(workspace)
+    assert p.result == "Blocked"
+    assert any("vault" in error and "denied" in error for error in p.errors)
+
+
 def test_dangling_secret_symlink_is_harmless(workspace):
     os.symlink("nowhere", workspace / ".env")
     p = make_plan(workspace)

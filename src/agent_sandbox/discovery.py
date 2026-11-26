@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import os
 import stat
+from collections import deque
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -69,7 +70,7 @@ class _Scan:
         self.skipped: dict[str, str] = {}
         self.inodes: dict[tuple[int, int], set[str]] = {}  # files with nlink > 1
         self.masked_keys: dict[tuple[int, int], str] = {}  # inode -> rel of a masked path
-        self.pending: list[tuple[str, str]] = []  # (symlink rel, abs path) to resolve
+        self.pending: deque[tuple[str, str, os.stat_result | None]] = deque()
         self.scanned_roots: set[str] = set()
         self.git_files: list[str] = []
 
@@ -108,7 +109,9 @@ class _Scan:
             for e in self._entries(abs_dir, rel, "masked directory, needed to find hard links"):
                 child = f"{rel}/{e.name}"
                 if e.is_symlink():
-                    self.pending.append((child, e.path))
+                    target = self._alias_target(e.path, child)
+                    if target is not None:
+                        self.pending.append((child, *target))
                 elif e.is_dir(follow_symlinks=False):
                     if self.skip.first(child, True) is None:
                         self.walk_masked(e.path, child)
@@ -160,25 +163,49 @@ class _Scan:
             self.git_files.append(rel)
         self._note_inode(e, rel, masked_source=False)
 
+    def _inside(self, path: str) -> bool:
+        return os.path.commonpath((self.ws_real, path)) == self.ws_real
+
+    def _alias_target(self, path: str, rel: str) -> tuple[str, os.stat_result | None] | None:
+        try:
+            real = os.path.realpath(path, strict=True)
+            if not self._inside(real):
+                return real, None
+            st = os.lstat(real)
+            if stat.S_ISLNK(st.st_mode):
+                self.out.errors.append(f"cannot resolve symlink {rel}: target changed during discovery")
+                return None
+            return real, st
+        except (FileNotFoundError, NotADirectoryError):
+            # A dangling alias inside the Workspace has no target to mask. Keep
+            # the warning for dangling aliases that refer outside the Workspace.
+            real = os.path.realpath(path)
+            return (real, None) if not self._inside(real) else None
+        except OSError as err:
+            self.out.errors.append(f"cannot resolve symlink {rel}: {err.strerror or err}")
+            return None
+
     def _symlink(self, e: os.DirEntry, rel: str) -> None:
-        real = os.path.realpath(e.path)
-        inside = real == self.ws_real or real.startswith(self.ws_real + os.sep)
-        is_dir = inside and os.path.isdir(real)
-        mask = self.mask.first(rel, is_dir)
-        if not mask:
+        if self.mask.first(rel, True) is None:
+            return  # No Secret pattern applies, even if the alias points to a directory.
+        target = self._alias_target(e.path, rel)
+        if target is None:
+            return
+        _, st = target
+        is_dir = st is not None and stat.S_ISDIR(st.st_mode)
+        if self.mask.first(rel, is_dir) is None:
             return
         allow = self.allow.first(rel, is_dir)
         if allow:
             self.allowed[rel] = ("dir" if is_dir else "file", _label("allow", allow))
         else:
-            self.pending.append((rel, e.path))
+            self.pending.append((rel, *target))
 
     # -- aliases
     def resolve_symlinks(self) -> None:
         done: set[str] = set()
         while self.pending:
-            link_rel, link_abs = self.pending.pop(0)
-            real = os.path.realpath(link_abs)
+            link_rel, real, st = self.pending.popleft()
             if real in done:
                 continue
             if real == self.ws_real:
@@ -186,15 +213,11 @@ class _Scan:
                     f"symlink {link_rel} points at the Workspace root; cannot mask it without hiding the whole Workspace"
                 )
                 continue
-            if not real.startswith(self.ws_real + os.sep):
+            if st is None:
                 self.out.warnings.append(
                     f"symlink {link_rel} points outside the Workspace; it is not followed and its target is not mounted"
                 )
                 continue
-            try:
-                st = os.lstat(real)
-            except OSError:
-                continue  # dangling: nothing to mask, and it stays dangling in the Session
             done.add(real)
             rel = os.path.relpath(real, self.ws_real).replace(os.sep, "/")
             reason = f"target of symlink {link_rel}"
@@ -231,13 +254,24 @@ class _Scan:
             if not stat.S_ISREG(st.st_mode):
                 continue
             try:
-                with open(path, "rb") as f:
-                    first = f.read(4096).decode(errors="replace").splitlines()[:1]
-            except OSError:
+                fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+                try:
+                    opened = os.fstat(fd)
+                    if not stat.S_ISREG(opened.st_mode) or not os.path.samestat(st, opened):
+                        continue
+                    first = os.read(fd, 4096).decode(errors="replace").splitlines()[:1]
+                finally:
+                    os.close(fd)
+                if not first or not first[0].startswith("gitdir:"):
+                    continue
+                pointer = first[0].split(":", 1)[1].strip()
+                if not pointer or "\0" in pointer:
+                    self.out.warnings.append(f"cannot inspect git pointer {rel}: invalid target")
+                    continue
+                target = Path(os.path.realpath(path.parent / pointer))
+            except (OSError, ValueError, RecursionError) as err:
+                self.out.warnings.append(f"cannot inspect git pointer {rel}: {err}")
                 continue
-            if not first or not first[0].startswith("gitdir:"):
-                continue
-            target = Path(os.path.realpath(path.parent / first[0].split(":", 1)[1].strip()))
             ws = Path(self.ws_real)
             if ws not in (target, *target.parents):
                 self.out.warnings.append(

@@ -107,6 +107,20 @@ def test_check_warns_about_external_git_metadata(workspace, docker, capsys):
     assert code == 0 and "outside the Workspace" in out and "not mounted" in out
 
 
+def test_check_handles_os_error_reading_git_pointer(workspace, docker, capsys, monkeypatch):
+    (workspace / ".git").write_text("gitdir: /somewhere/else/.git/worktrees/x\n")
+    real_open = os.open
+
+    def denied(path, *args, **kwargs):
+        if os.fspath(path) in (".git", str(workspace / ".git")):
+            raise PermissionError(13, "denied")
+        return real_open(path, *args, **kwargs)
+
+    monkeypatch.setattr(os, "open", denied)
+    code, out, _ = run(["check", str(workspace)], docker, capsys)
+    assert code == 0 and "cannot inspect git pointer .git" in out
+
+
 def test_external_git_metadata_in_a_nested_directory_is_warned(workspace, docker, capsys):
     (workspace / "sub").mkdir()
     (workspace / "sub" / ".git").write_text("gitdir: /elsewhere/.git/worktrees/sub\n")
