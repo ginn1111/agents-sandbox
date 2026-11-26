@@ -116,10 +116,14 @@ elif "iptables" in args:
     if s.get("iptables_fails") and "-A" in args:
         finish(4, "iptables: Failed to apply the rule")
     rest = args[args.index("iptables") + 1:]
-    op = next(a for a in rest if a in ("-A", "-C", "-D"))
+    op = next(a for a in rest if a in ("-A", "-C", "-D", "-S"))
     chain = rest[rest.index(op) + 1]
-    spec = " ".join(rest[rest.index(op) + 2:])
     cur = rules.setdefault(f"{args[1]}/{chain}", [])
+    if op == "-S":
+        for spec in cur:
+            print(f"-A {chain} {spec}")
+        finish(0)
+    spec = " ".join(rest[rest.index(op) + 2:])
     if op == "-A":
         cur.append(spec)
     elif spec not in cur:

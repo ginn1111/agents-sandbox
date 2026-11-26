@@ -112,7 +112,7 @@ def test_netguard_admits_only_the_publisher_to_the_portal_port_and_drops_the_net
     _, guard, publisher, net = names(up)
     r = pdocker.rules(guard)
     pub_ip = f"172.30.1.{2 + pdocker.state()['networks'][net]['members'].index(publisher)}"
-    assert r["INPUT"] == [f"-p tcp -s {pub_ip} --dport 19432 -j ACCEPT"]
+    assert r["INPUT"] == [f"-p tcp -s {pub_ip} --dport 19432 -m comment --comment asb-portal:plannotator -j ACCEPT"]
     assert r["NG_LOCAL"] == ["-d 172.30.1.0/24 -j DROP"]
     assert not any("0.0.0.0" in x or "-s 0" in x for x in r["INPUT"])
 
@@ -202,6 +202,28 @@ def test_stop_unpublishes_and_keeps_the_session(up, pdocker, capsys):
     assert publisher not in pdocker.containers and net not in pdocker.state()["networks"]
     assert pdocker.rules(guard)["INPUT"] == [] and pdocker.rules(guard)["NG_LOCAL"] == []
     assert session in pdocker.containers and guard in pdocker.containers
+
+
+def test_stop_removes_input_rule_when_publisher_already_exited(up, pdocker, capsys):
+    start(up, pdocker, capsys)
+    _, guard, publisher, net = names(up)
+    pdocker.kill(publisher)
+    code, _, _ = run(["portal", "stop", "plannotator", str(up)], pdocker, capsys)
+    assert code == 0
+    assert publisher not in pdocker.containers and net not in pdocker.state()["networks"]
+    assert pdocker.rules(guard)["INPUT"] == [] and pdocker.rules(guard)["NG_LOCAL"] == []
+
+
+def test_network_ips_raises_portal_error_when_ip_address_is_empty(tmp_path):
+    from agent_sandbox.portals import PortalError
+    from agent_sandbox.runtime import Result
+
+    class StubDocker:
+        def run(self, *args, **kwargs):
+            return Result(0, '{"net": {"IPAddress": ""}}', "")
+
+    with pytest.raises(PortalError, match="no address"):
+        portal_runtime._network_ips(StubDocker(), "ctr", "net")
 
 
 def test_stop_never_touches_a_service_the_agent_started(up, pdocker, capsys):

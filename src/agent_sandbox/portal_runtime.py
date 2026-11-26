@@ -15,6 +15,7 @@ Start, in order (each step is undone by `_unpublish` if a later one fails):
 from __future__ import annotations
 
 import json
+import shlex
 import time
 from pathlib import Path
 from typing import TextIO
@@ -53,9 +54,12 @@ def _require_running(docker: Docker, plan: SessionPlan) -> None:
 def _network_ips(docker: Docker, container: str, network: str) -> str:
     out = docker.run("inspect", "--format", "{{json .NetworkSettings.Networks}}", container).out
     try:
-        return json.loads(out)[network]["IPAddress"]
+        ip = json.loads(out)[network]["IPAddress"]
     except (ValueError, KeyError, TypeError) as e:
         raise portals.PortalError(f"{container} has no address on {network}") from e
+    if not ip:
+        raise portals.PortalError(f"{container} has no address on {network}")
+    return ip
 
 
 class PortalController:
@@ -135,6 +139,13 @@ class PortalController:
                     pass
         if pub_ip:
             _ng(self.d, ng, "-D", *portals.input_rule(entry, pub_ip), check=False)
+        else:
+            tag = f"{portals.RULE_TAG}{entry['name']}"
+            r = _ng(self.d, ng, "-S", "INPUT", check=False)
+            for line in r.out.splitlines():
+                parts = shlex.split(line)
+                if len(parts) >= 2 and parts[0] == "-A" and parts[1] == "INPUT" and tag in parts:
+                    _ng(self.d, ng, "-D", *parts[1:], check=False)
         if subnet:
             _ng(self.d, ng, "-D", *portals.local_drop_rule(subnet), check=False)
         self.d.run("rm", "-f", entry["publisher"], check=False)

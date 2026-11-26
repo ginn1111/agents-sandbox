@@ -149,7 +149,8 @@ def network_create(entry: dict, session: str) -> list[str]:
 
 def input_rule(entry: dict, publisher_ip: str) -> list[str]:
     """The one INPUT rule for a Portal: that publisher, that port, nothing else."""
-    return ["INPUT", "-p", "tcp", "-s", publisher_ip, "--dport", str(entry["port"]), "-j", "ACCEPT"]
+    return ["INPUT", "-p", "tcp", "-s", publisher_ip, "--dport", str(entry["port"]),
+            "-m", "comment", "--comment", f"{RULE_TAG}{entry['name']}", "-j", "ACCEPT"]
 
 
 def local_drop_rule(subnet: str) -> list[str]:
