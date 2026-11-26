@@ -14,5 +14,6 @@ ADR-0008 makes Chrome an opt-in Host Browser and ADR-0013 says it is opened only
 
 - On Linux a loopback-only Chrome is unreachable until the human runs the relay; `doctor` probes from the Session after `enable` and reports exactly that case. On Colima and Docker Desktop whether `host.docker.internal:9222` reaches the host's loopback depends on the VM's forwarding (UNVERIFIED).
 - While enabled, the agent controls a full browser on the host: the intranet, LAN services Netguard blocks, and `file:///` paths on the host are reachable through it. The dedicated profile limits what cookies and logins exist; it does not limit where the browser can go. Chrome URL policies stay deferred (ADR-0008).
+- `chrome-devtools-mcp` is pinned to an exact version in the agent Dockerfile (`ARG CHROME_DEVTOOLS_MCP_VERSION`), an exception to ADR-0012's "latest at build time": the wrapper relies on its `--browser-url` behaviour, so a new version is taken by editing the pin, not silently by `asb update`. `PUPPETEER_SKIP_DOWNLOAD=1` keeps a browser out of the image.
 - Port 9222 is fixed. A different port means a different launch command and a code change; one fewer input to validate.
 - `asb-chrome-mcp` accepts extra arguments for `chrome-devtools-mcp`, but it is not a security boundary: Netguard is. Only the one port opened by `enable` is reachable.

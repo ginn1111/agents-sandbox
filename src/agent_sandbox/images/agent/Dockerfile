@@ -56,11 +56,14 @@ RUN MISE_DATA_DIR=/opt/agent-node MISE_CACHE_DIR=/tmp/mise-cache mise install no
 # ---- Claude Code, Codex, OMP (with bun), the DBX MCP server and bru, from npm: latest at build
 # time; `asb update` rebuilds without cache (ADR-0012). wrap-node-bins pins their `node`
 # shebangs to /opt/node so a project's mise-pinned Node never changes how an agent runs.
+# chrome-devtools-mcp is the one pinned exception to ADR-0012 (ADR-0020): asb-chrome-mcp depends on its
+# --browser-url flag and connection behaviour, so a bump is a reviewed change, not whatever `latest` is.
+ARG CHROME_DEVTOOLS_MCP_VERSION=1.14.0
 COPY wrap-node-bins.sh /usr/local/bin/wrap-node-bins
 RUN chmod 0755 /usr/local/bin/wrap-node-bins \
  && PUPPETEER_SKIP_DOWNLOAD=1 PATH="/opt/node/bin:$PATH" npm install -g --prefix /opt/agents --no-fund --no-audit \
       @anthropic-ai/claude-code @openai/codex @oh-my-pi/pi-coding-agent bun \
-      @dbx-app/mcp-server @usebruno/cli chrome-devtools-mcp \
+      @dbx-app/mcp-server @usebruno/cli "chrome-devtools-mcp@${CHROME_DEVTOOLS_MCP_VERSION}" \
  && wrap-node-bins /opt/agents/bin /opt/agents/bin-wrapped /opt/node/bin/node \
  && chmod -R a+rX /opt/agents \
  && rm -rf /root/.npm

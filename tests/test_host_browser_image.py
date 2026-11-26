@@ -131,3 +131,14 @@ def test_the_wrapper_has_no_host_or_port_input_other_than_the_constant():
     text = WRAPPER.read_text()
     assert "host.docker.internal" in text and "9222" in text
     assert "HOST_BROWSER" not in text and "$HOST" not in text and "${2" not in text
+
+
+def test_chrome_devtools_mcp_is_pinned_to_one_exact_version():
+    # The wrapper relies on --browser-url; an unpinned `latest` could change that flag under us.
+    import re
+    text = DOCKERFILE.read_text()
+    m = re.search(r"^ARG CHROME_DEVTOOLS_MCP_VERSION=(\d+\.\d+\.\d+)$", text, re.M)
+    assert m, "chrome-devtools-mcp must be pinned with ARG CHROME_DEVTOOLS_MCP_VERSION=<x.y.z>"
+    npm = text[text.index("npm install -g"):text.index("wrap-node-bins /opt/agents/bin")]
+    assert "chrome-devtools-mcp@${CHROME_DEVTOOLS_MCP_VERSION}" in npm
+    assert re.search(r"chrome-devtools-mcp(?!@)\s", npm) is None  # no unpinned copy alongside
