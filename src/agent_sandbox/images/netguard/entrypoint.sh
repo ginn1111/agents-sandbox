@@ -41,6 +41,7 @@ resolvers=$(awk '$1 == "nameserver" && $2 ~ /^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$/ &
 for ns in $resolvers; do
     for proto in udp tcp; do
         iptables -A NG_DNS -d "$ns" -p "$proto" --dport 53 -j ACCEPT || fail "cannot allow DNS to $ns"
+        iptables -C NG_DNS -d "$ns" -p "$proto" --dport 53 -j ACCEPT || fail "verify: DNS rule for $ns not applied"
     done
 done
 
@@ -52,6 +53,8 @@ subnet=$(ip -4 -o addr show scope global | awk '{ for (i = 1; i < NF; i++) if ($
 [ -n "$subnet" ] || fail "no network address found"
 iptables -A NG_LOCAL -d "$gateway" -j DROP || fail "cannot block the gateway $gateway"
 iptables -A NG_LOCAL -d "$subnet" -j DROP || fail "cannot block the subnet $subnet"
+iptables -C NG_LOCAL -d "$gateway" -j DROP || fail "verify: gateway drop not applied"
+iptables -C NG_LOCAL -d "$subnet" -j DROP || fail "verify: subnet drop not applied"
 
 # 4. verify what is actually applied
 saved=$(iptables-save) || fail "cannot verify the rules: iptables-save failed"

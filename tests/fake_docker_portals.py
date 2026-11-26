@@ -80,6 +80,8 @@ elif cmd == "network":
         if ctr in nets.get(net, {}).get("members", []):
             nets[net]["members"].remove(ctr)
     elif sub == "rm":
+        if s.get("network_rm_fails"):
+            finish(1, "network removal failed")
         n = args[-1]
         if n not in nets:
             finish(1, f"no such network {n}")
@@ -92,8 +94,9 @@ elif cmd == "network":
         print(f"172.30.{list(nets).index(args[-1]) + 1}.0/24")
     elif sub == "ls":
         want = [f.split("=", 2)[2] for f in opt("--filter") if f.startswith("label=agent-sandbox.session=")]
+        exact = [f[6:-1] for f in opt("--filter") if f.startswith("name=^")]
         for n, v in nets.items():
-            if not want or f"agent-sandbox.session={want[0]}" in v["labels"]:
+            if (not exact or n in exact) and (not want or f"agent-sandbox.session={want[0]}" in v["labels"]):
                 print(n)
 elif cmd == "inspect":
     ctr = args[-1]

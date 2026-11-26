@@ -26,7 +26,10 @@ def opt(flag):
 
 cmd = args[0] if args else ""
 if cmd == "version":
-    print("27.0.0")
+    if "{{.Server.Os}}" in opt("--format"):
+        print(state.get("server_os", "linux"))
+    else:
+        print(state.get("server_version", "28.0.0"))
 elif cmd == "info":
     if not state["daemon"]:
         print("Cannot connect to the Docker daemon", file=sys.stderr)

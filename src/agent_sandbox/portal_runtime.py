@@ -1,20 +1,15 @@
 """Start, stop and inspect Portals in a running Session (ADR-0010, ADR-0013, ADR-0018).
 
 Everything here runs against the live Session: neither the Session nor Netguard is restarted or
-replaced. A start that fails part-way undoes every step it did, so a failed Portal is never left
-published, and never leaves a rule or a network behind.
-
-Start, in order (each step is undone by `_unpublish` if a later one fails):
-  1. optional: run the configured `command` in the Session and wait until the port answers
-  2. create the Portal's own `--internal` network and connect Netguard to it
-  3. run the publisher (127.0.0.1:<random>:8000 -> Netguard's address:<port>) and connect it
-  4. in Netguard: drop the Portal network for anything the Session starts (NG_LOCAL), then admit
-     that publisher to that one port (INPUT); read both back
-  5. read the host binding back from Docker and refuse anything that is not 127.0.0.1
+replaced. Install the subnet drop before attaching Netguard to the Portal network. Verify Docker's
+reported loopback binding before admitting the publisher to the service. On failure, revoke ingress
+and remove the publisher and network; report cleanup that cannot be verified.
 """
 from __future__ import annotations
 
+import ipaddress
 import json
+import re
 import shlex
 import time
 from pathlib import Path
@@ -57,9 +52,15 @@ def _network_ips(docker: Docker, container: str, network: str) -> str:
         ip = json.loads(out)[network]["IPAddress"]
     except (ValueError, KeyError, TypeError) as e:
         raise portals.PortalError(f"{container} has no address on {network}") from e
-    if not ip:
+    if not isinstance(ip, str) or not ip:
         raise portals.PortalError(f"{container} has no address on {network}")
-    return ip
+    try:
+        address = ipaddress.IPv4Address(ip)
+    except ValueError as e:
+        raise portals.PortalError(f"{container} has no IPv4 address on {network}") from e
+    if address.is_unspecified or address.is_loopback or address.is_multicast or address.is_reserved:
+        raise portals.PortalError(f"{container} has no usable IPv4 address on {network}")
+    return str(address)
 
 
 class PortalController:
@@ -85,72 +86,103 @@ class PortalController:
         entry = _find(self.plan, name)
         _require_running(self.d, self.plan)
         if self.published(entry):
-            return self.url(entry)  # already on: same URL, nothing re-created
+            try:
+                self._require_loopback_engine()
+                return self.url(entry)  # already on: same URL, nothing re-created
+            except portals.PortalError:
+                self._unpublish(entry)
+                raise
         if not self.d.has_image(portals.IMAGE):
             raise portals.PortalError(f"image {portals.IMAGE} not found; run `asb build` first")
         env = self._env(entry)  # may refuse (secret store inside the Workspace) before anything starts
         self._unpublish(entry)  # leftovers of a crashed start
+        self._require_loopback_engine()
         started_process = bool(entry["command"])
         try:
             if started_process:
                 self._start_process(entry, env)
-            self._publish(entry)
-            return self.url(entry)
-        except (DockerError, portals.PortalError) as e:
-            self._unpublish(entry)
-            if started_process:
-                self._stop_process(entry)
-            if isinstance(e, portals.PortalError):
+            return portals.url(self._publish(entry), entry["open"])
+        except (DockerError, portals.PortalError, KeyboardInterrupt) as e:
+            try:
+                self._unpublish(entry)
+            except (DockerError, portals.PortalError) as cleanup:
+                raise portals.PortalError(f"could not start Portal {name}: {e}; {cleanup}") from e
+            finally:
+                if started_process:
+                    self._stop_process(entry)
+            if not isinstance(e, DockerError):
                 raise
             raise portals.PortalError(f"could not start Portal {name}: {e}") from e
 
-    def _publish(self, entry: dict) -> None:
+    def _require_loopback_engine(self) -> None:
+        # Prior to 28, Docker's localhost publish did not enforce the same-L2 boundary.
+        # Query the active server, not the OS or version of the Docker CLI client.
+        r = self.d.run("version", "--format", "{{.Server.Version}}", check=False)
+        version = re.fullmatch(r"([0-9]{1,4})\.[0-9]+\.[0-9]+(?:\+[a-zA-Z0-9.+-]+)?", r.out.strip())
+        if r.code != 0 or not version or int(version[1]) < 28:
+            raise portals.PortalError("Portal publication requires Docker Engine 28.0.0 or later (stable) for loopback binding")
+
+    def _publish(self, entry: dict) -> int:
         session, ng = self.plan.container_name, self.plan.netguard_name
         self.d.run(*portals.network_create(entry, session))
+        subnet = self.d.run("network", "inspect", "--format", "{{(index .IPAM.Config 0).Subnet}}", entry["network"]).out.strip()
+        try:
+            subnet = str(ipaddress.IPv4Network(subnet))
+        except ValueError as e:
+            raise portals.PortalError(f"cannot verify the IPv4 subnet of {entry['network']}") from e
+        self._rule("-A", portals.local_drop_rule(subnet, entry["name"]))
         self.d.run("network", "connect", entry["network"], ng)
         ng_ip = _network_ips(self.d, ng, entry["network"])
-        subnet = self.d.run("network", "inspect", "--format", "{{(index .IPAM.Config 0).Subnet}}", entry["network"]).out.strip()
-        if not subnet:
-            raise portals.PortalError(f"cannot read the subnet of {entry['network']}")
-        # The Session shares Netguard's network namespace, so it sees this new interface too.
-        # Drop that subnet for everything the Session starts *before* anything else lives on it.
-        self._rule("-A", portals.local_drop_rule(subnet))
         self.d.run(*portals.publisher_run(entry, session, ng_ip))
+        port = self.host_port(entry)  # do not permit service access until the binding is verified
         self.d.run("network", "connect", entry["network"], entry["publisher"])
-        self._rule("-A", portals.input_rule(entry, _network_ips(self.d, entry["publisher"], entry["network"])))
-        self.host_port(entry)  # raises unless Docker reports 127.0.0.1 only
+        pub_ip = _network_ips(self.d, entry["publisher"], entry["network"])
+        self._rule("-A", portals.input_rule(entry, pub_ip, ng_ip))
+        return port
 
     def _rule(self, op: str, rule: list[str]) -> None:
         """Apply one Netguard rule and read it back; fail closed if it is not there."""
         _ng(self.d, self.plan.netguard_name, op, *rule)
         _ng(self.d, self.plan.netguard_name, "-C", *rule)
 
-    def _unpublish(self, entry: dict) -> None:
-        """Remove everything a start creates. Safe to call at any point, and twice."""
+    def _remove_rules(self, chain: str, entry: dict) -> bool:
         ng = self.plan.netguard_name
-        pub_ip = subnet = None
-        if self.d.run("network", "inspect", entry["network"], check=False).code == 0:
-            subnet = self.d.run("network", "inspect", "--format", "{{(index .IPAM.Config 0).Subnet}}",
-                                entry["network"], check=False).out.strip() or None
-            if self.d.container_running(entry["publisher"]):
-                try:
-                    pub_ip = _network_ips(self.d, entry["publisher"], entry["network"])
-                except portals.PortalError:
-                    pass
-        if pub_ip:
-            _ng(self.d, ng, "-D", *portals.input_rule(entry, pub_ip), check=False)
-        else:
-            tag = f"{portals.RULE_TAG}{entry['name']}"
-            r = _ng(self.d, ng, "-S", "INPUT", check=False)
+        tag = f"{portals.RULE_TAG}{entry['name']}"
+
+        def tagged():
+            r = _ng(self.d, ng, "-S", chain, check=False)
+            if r.code != 0:
+                raise ValueError("cannot read firewall rules")
             for line in r.out.splitlines():
                 parts = shlex.split(line)
-                if len(parts) >= 2 and parts[0] == "-A" and parts[1] == "INPUT" and tag in parts:
-                    _ng(self.d, ng, "-D", *parts[1:], check=False)
-        if subnet:
-            _ng(self.d, ng, "-D", *portals.local_drop_rule(subnet), check=False)
-        self.d.run("rm", "-f", entry["publisher"], check=False)
-        self.d.run("network", "disconnect", "-f", entry["network"], ng, check=False)
-        self.d.run("network", "rm", entry["network"], check=False)
+                if parts[:2] == ["-A", chain] and any(
+                    parts[i:i + 2] == ["--comment", tag] for i in range(2, len(parts))
+                ):
+                    yield parts[1:]
+
+        try:
+            for parts in tagged():
+                _ng(self.d, ng, "-D", *parts, check=False)
+            return not list(tagged())
+        except ValueError:
+            return False
+
+    def _unpublish(self, entry: dict) -> None:
+        """Revoke ingress, then remove the publisher and detach the guarded network before lifting its drop."""
+        ng, publisher, net = self.plan.netguard_name, entry["publisher"], entry["network"]
+        running = bool(ng and self.d.container_running(ng))
+        ingress_removed = not running or self._remove_rules("INPUT", entry)
+        self.d.run("rm", "-f", publisher, check=False)
+        if ng:
+            self.d.run("network", "disconnect", "-f", net, ng, check=False)
+        self.d.run("network", "rm", net, check=False)
+        # Check absence independently: a failed remove can mean either absent or still present.
+        containers = self.d.run("ps", "-a", "--filter", f"name=^{publisher}$", "--format", "{{.Names}}")
+        networks = self.d.run("network", "ls", "--filter", f"name=^{net}$", "--format", "{{.Name}}")
+        network_removed = net not in networks.out.split()
+        drop_removed = not running or (network_removed and self._remove_rules("NG_LOCAL", entry))
+        if not ingress_removed or publisher in containers.out.split() or not drop_removed or not network_removed:
+            raise portals.PortalError(f"could not verify cleanup of Portal {entry['name']}; run `asb down`")
 
     # -- the service the CLI started through `command`
     def _env(self, entry: dict) -> dict[str, str]:

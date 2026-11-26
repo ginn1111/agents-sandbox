@@ -34,7 +34,8 @@ printf '%s\n' "$*" | sed -e 's/ -d \([0-9.]*\) / -d \1\/32 /' -e 's/ --dport / -
 case "$1" in
     -A) shift; if [ -n "$STUB_ADD_SILENTLY_DROPS" ]; then exit 0; fi
         norm "-A $@" >> "$chain_file" ;;
-    -D) shift; line=$(norm "-A $@"); grep -vxF -- "$line" "$chain_file" > "$chain_file.new"; mv "$chain_file.new" "$chain_file" ;;
+    -D) shift; line=$(norm "-A $@"); sed 's/"\(asb-svc:[a-z0-9-]*\)"/\1/' "$chain_file" | grep -vxF -- "$line" > "$chain_file.new"; mv "$chain_file.new" "$chain_file" ;;
+    -C) shift; line=$(norm "-A $@"); grep -qxF -- "$line" "$chain_file" ;;
     -S) echo "-N NG_SERVICES"; cat "$chain_file" ;;
     *) exit 1 ;;
 esac
@@ -172,6 +173,31 @@ def test_enable_refuses_before_netguard_is_ready(env):
     (Path(env["ASB_NETGUARD_RUN_DIR"]) / "ready").unlink()
     r = helper(env, "enable", "a", "192.168.5.2", "80")
     assert r.returncode != 0 and chain(env) == [] and "ready" in r.stderr
+
+
+@pytest.mark.parametrize('action', [('list',), ('disable', 'dbx')])
+def test_read_failure_is_not_reported_as_success(env, action):
+    stub = Path(env['PATH'].split(':')[0]) / 'iptables'
+    stub.write_text(stub.read_text().replace('    -S) echo',
+        '    -S) [ ! -e "$chain_file.fail-read" ] || exit 1; touch "$chain_file.fail-read"; echo'))
+    if action[0] == 'list':
+        (Path(env['STUB_DIR']) / 'chain.fail-read').touch()
+    assert helper(env, *action).returncode != 0
+
+
+def test_helper_refuses_while_another_service_operation_owns_the_lock(env):
+    lock = Path(env['ASB_NETGUARD_RUN_DIR']) / 'service.lock'
+    lock.mkdir()
+    assert helper(env, 'enable', 'dbx', '192.168.5.2', '2000').returncode != 0
+    assert chain(env) == [] and lock.is_dir()
+
+
+def test_list_and_disable_handle_quoted_comment_readback(env):
+    assert helper(env, 'enable', 'dbx', '192.168.5.2', '2000').returncode == 0
+    state = Path(env['STUB_DIR']) / 'chain'
+    state.write_text(state.read_text().replace('asb-svc:dbx', '"asb-svc:dbx"'))
+    assert helper(env, 'list').stdout.split() == ['dbx']
+    assert helper(env, 'disable', 'dbx').returncode == 0 and chain(env) == []
 
 
 def test_a_failing_iptables_fails_the_command_and_leaves_nothing_open(env):

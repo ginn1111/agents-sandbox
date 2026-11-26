@@ -30,6 +30,11 @@ cat > "$STUB_DIR/applied"
 """,
     "iptables": """#!/bin/sh
 [ -z "$STUB_IPTABLES_FAILS" ] || exit 1
+if [ "$1" = -C ]; then
+    shift
+    grep -qxF -- "-A $*" "$STUB_DIR/appended"
+    exit $?
+fi
 printf '%s\\n' "$*" >> "$STUB_DIR/appended"
 """,
     "iptables-save": """#!/bin/sh
@@ -167,6 +172,13 @@ def test_no_ready_file_when_iptables_restore_fails(env):
     env["STUB_RESTORE_FAILS"] = "1"
     code, _, ready = run(env)
     assert code not in (None, 0) and not ready.exists()
+
+
+def test_no_ready_file_when_dynamic_rules_cannot_be_verified(env):
+    env["STUBS"]["iptables"] = env["STUBS"]["iptables"].replace(
+        'if [ "$1" = -C ]; then', 'if [ "$1" = -C ]; then\n    exit 1')
+    code, err, ready = run(env)
+    assert code not in (None, 0) and not ready.exists() and "verify" in err
 
 
 def test_no_ready_file_when_adding_resolver_or_local_rules_fails(env):

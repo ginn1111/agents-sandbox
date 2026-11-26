@@ -112,8 +112,8 @@ def test_netguard_admits_only_the_publisher_to_the_portal_port_and_drops_the_net
     _, guard, publisher, net = names(up)
     r = pdocker.rules(guard)
     pub_ip = f"172.30.1.{2 + pdocker.state()['networks'][net]['members'].index(publisher)}"
-    assert r["INPUT"] == [f"-p tcp -s {pub_ip} --dport 19432 -m comment --comment asb-portal:plannotator -j ACCEPT"]
-    assert r["NG_LOCAL"] == ["-d 172.30.1.0/24 -j DROP"]
+    assert r["INPUT"] == [f"-p tcp -s {pub_ip} -d 172.30.1.2 --dport 19432 -m comment --comment asb-portal:plannotator -j ACCEPT"]
+    assert r["NG_LOCAL"] == ["-d 172.30.1.0/24 -m comment --comment asb-portal:plannotator -j DROP"]
     assert not any("0.0.0.0" in x or "-s 0" in x for x in r["INPUT"])
 
 
@@ -163,6 +163,48 @@ def test_a_non_loopback_binding_is_refused_and_everything_is_undone(up, pdocker,
     assert publisher not in pdocker.containers and net not in pdocker.state()["networks"]
     assert pdocker.rules(guard).get("INPUT", []) == [] and pdocker.rules(guard).get("NG_LOCAL", []) == []
     assert session in pdocker.containers and guard in pdocker.containers
+
+
+def test_binding_is_verified_before_any_publisher_ingress(up, pdocker, capsys):
+    pdocker.set(publish_on="0.0.0.0")
+    assert start(up, pdocker, capsys)[0] != 0
+    assert not any("iptables" in c and "-A" in c and "INPUT" in c for c in pdocker.calls)
+
+
+def test_start_unpublishes_an_existing_invalid_binding(up, pdocker, capsys):
+    assert start(up, pdocker, capsys)[0] == 0
+    pdocker.set(publish_on="0.0.0.0")
+    assert start(up, pdocker, capsys)[0] != 0
+    _, guard, publisher, _ = names(up)
+    assert publisher not in pdocker.containers and not pdocker.rules(guard)["INPUT"]
+
+
+def test_stop_cleans_all_tagged_ingress_even_for_a_running_publisher(up, pdocker, capsys):
+    assert start(up, pdocker, capsys)[0] == 0
+    _, guard, _, _ = names(up)
+    rules = pdocker.state()["iptables"]
+    rules[f"{guard}/INPUT"].append(rules[f"{guard}/INPUT"][0])
+    pdocker.set(iptables=rules)
+    assert run(["portal", "stop", "plannotator", str(up)], pdocker, capsys)[0] == 0
+    assert not pdocker.rules(guard)["INPUT"]
+
+
+@pytest.mark.parametrize("server_version", ["27.5.1", "28.0.0-rc.1", "unknown"])
+def test_start_refuses_engines_without_verified_loopback_publication(up, pdocker, capsys, server_version):
+    pdocker.set(server_version=server_version)
+    code, out, err = start(up, pdocker, capsys)
+    assert code != 0 and "Docker Engine 28" in err and "http://" not in out
+    assert names(up)[2] not in pdocker.containers
+
+
+def test_failed_network_removal_keeps_the_outbound_drop(up, pdocker, capsys):
+    assert start(up, pdocker, capsys)[0] == 0
+    pdocker.set(network_rm_fails=True)
+    code, _, err = run(["portal", "stop", "plannotator", str(up)], pdocker, capsys)
+    _, guard, publisher, net = names(up)
+    assert code != 0 and "could not verify cleanup" in err
+    assert publisher not in pdocker.containers and net in pdocker.state()["networks"]
+    assert not pdocker.rules(guard)["INPUT"] and pdocker.rules(guard)["NG_LOCAL"]
 
 
 def test_a_failed_firewall_rule_leaves_nothing_published(up, pdocker, capsys):

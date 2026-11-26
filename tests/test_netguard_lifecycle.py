@@ -34,6 +34,13 @@ def names(workspace):
     return s, f"{s}-netguard"
 
 
+def test_up_rejects_a_non_linux_docker_daemon_before_starting_netguard(workspace, docker, capsys):
+    docker.has_image()
+    docker.set(server_os="windows")
+    code, _, err = run(["up", str(workspace)], docker, capsys)
+    assert code != 0 and "Linux Docker daemon" in err and runs(docker) == []
+
+
 def test_up_starts_netguard_first_and_the_session_only_after_it_is_ready(workspace, docker, capsys):
     docker.has_image()
     code, _, _ = run(["up", str(workspace)], docker, capsys)

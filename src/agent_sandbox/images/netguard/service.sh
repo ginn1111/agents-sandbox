@@ -7,10 +7,9 @@
 #   asb-service list                          names of the enabled services, one per line
 #
 # Rules go into NG_SERVICES, which the OUTPUT chain consults before the range drops (NG_LOCAL, the
-# private ranges), so the listed port is reachable and every other port on the same host stays
-# dropped. Each rule is tagged with a comment naming the service so disable can find it.
-# Fail closed: invalid input, an unready Netguard, a failed `iptables` or a rule that cannot be
-# read back leaves nothing open for that service (it is rolled back); the default is always DROP.
+# private ranges), adding an exception for the named TCP endpoint without restricting destinations
+# that the base policy already allows. Disabling removes the exception for new connections only.
+# Failed updates attempt to remove the service's rules and report if rollback cannot be verified.
 set -eu
 set -f   # no globbing: rules are passed to iptables as split words
 
@@ -65,15 +64,34 @@ resolve() {
     printf '%s\n' "$out" | awk '$1 ~ /^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$/ { print $1 }' | sort -u
 }
 
-# Delete every rule tagged for service $1. Succeeds when there is none.
+# iptables may quote comments. Unquote only our restricted, whitespace-free tags;
+# never evaluate rule output as shell code.
+read_rules() {
+    raw=$(iptables -w -S "$CHAIN") || return 1
+    printf '%s\n' "$raw" | sed 's/ --comment "\(asb-svc:[a-z0-9-]*\)" / --comment \1 /'
+}
+
+tagged_rules() {
+    awk -v tag="asb-svc:$1" -v chain="$CHAIN" '
+        $1 == "-A" && $2 == chain { for (i = 3; i < NF; i++) if ($i == "--comment" && $(i + 1) == tag) { print; next } }'
+}
+
+# Delete every rule tagged for service $1 and verify its absence.
 remove_rules() {
-    tag="asb-svc:$1"
-    rules=$(iptables -w -S "$CHAIN") || return 1
-    printf '%s\n' "$rules" | awk -v tag="$tag" -v chain="$CHAIN" '
-        $1 == "-A" && $2 == chain { for (i = 3; i < NF; i++) if ($i == "--comment" && $(i + 1) == tag) { print; next } }' \
-        | sed 's/^-A /-D /' | while IFS= read -r rule; do
-            iptables -w $rule || exit 1
-        done
+    rules=$(read_rules) || return 1
+    matches=$(printf '%s\n' "$rules" | tagged_rules "$1") || return 1
+    printf '%s\n' "$matches" | while IFS= read -r rule; do
+        [ -n "$rule" ] || continue
+        iptables -w -D ${rule#-A } || exit 1
+    done || return 1
+    rules=$(read_rules) || return 1
+    matches=$(printf '%s\n' "$rules" | tagged_rules "$1") || return 1
+    [ -z "$matches" ]
+}
+
+rollback() {
+    remove_rules "$name" || fail "$*; rollback could not be verified; run asb down"
+    fail "$*"
 }
 
 [ $# -ge 1 ] || usage
@@ -83,18 +101,23 @@ for tool in iptables awk grep sed sort; do
     command -v "$tool" >/dev/null 2>&1 || fail "required tool missing: $tool"
 done
 
+# -w protects individual iptables commands, not this read/update/verify transaction.
+# Never steal a lock left by a killed helper; resetting the Session removes it and its rules.
+lock="$RUN_DIR/service.lock"
+mkdir "$lock" 2>/dev/null || fail "cannot acquire the Host Service lock; retry or reset the Session with asb down"
+trap 'rmdir "$lock"' EXIT
+trap 'exit 1' HUP INT TERM
+
 case "$action" in
     list)
         [ $# -eq 0 ] || usage
-        iptables -w -S "$CHAIN" | sed -n 's/.* --comment asb-svc:\([a-z0-9-]*\) .*/\1/p' | sort -u
+        saved=$(read_rules) || fail "cannot list Host Service rules"
+        printf '%s\n' "$saved" | sed -n 's/.* --comment asb-svc:\([a-z0-9-]*\) .*/\1/p' | sort -u
         ;;
     disable)
         [ $# -eq 1 ] || usage
         valid_name "$1" || fail "invalid service name '$1'"
-        remove_rules "$1" || fail "cannot remove the rules of '$1'"
-        if iptables -w -S "$CHAIN" | grep -q -- "--comment asb-svc:$1 "; then
-            fail "verify: rules of '$1' are still present"
-        fi
+        remove_rules "$1" || fail "cannot verify removal of '$1'; run asb down"
         ;;
     enable)
         [ $# -eq 3 ] || usage
@@ -110,22 +133,18 @@ case "$action" in
         for ip in $ips; do
             usable_ip "$ip" || fail "'$host' resolves to $ip, which must never be opened"
         done
-        remove_rules "$name" || fail "cannot replace the rules of '$name'"
+        remove_rules "$name" || fail "cannot verify replacement of '$name'; run asb down"
+        trap 'rollback "Host Service update interrupted"' HUP INT TERM
         tag="asb-svc:$name"
         for ip in $ips; do
-            if ! iptables -w -A "$CHAIN" -d "$ip" -p tcp --dport "$port" -m comment --comment "$tag" -j ACCEPT; then
-                remove_rules "$name" || true
-                fail "cannot allow $ip:$port"
-            fi
+            iptables -w -A "$CHAIN" -d "$ip" -p tcp --dport "$port" -m comment --comment "$tag" -j ACCEPT \
+                || rollback "cannot allow $ip:$port"
         done
-        saved=$(iptables -w -S "$CHAIN") || { remove_rules "$name" || true; fail "verify: cannot read back $CHAIN"; }
         for ip in $ips; do
-            want="-A $CHAIN -d $ip/32 -p tcp -m tcp --dport $port -m comment --comment $tag -j ACCEPT"
-            if ! printf '%s\n' "$saved" | grep -qxF -- "$want"; then
-                remove_rules "$name" || true
-                fail "verify: rule not applied: $want"
-            fi
+            iptables -w -C "$CHAIN" -d "$ip" -p tcp --dport "$port" -m comment --comment "$tag" -j ACCEPT \
+                || rollback "verify: rule not applied for $ip:$port"
         done
+        trap 'exit 1' HUP INT TERM
         echo "$name: $host:$port open ($(echo $ips))"
         ;;
     *) usage ;;

@@ -147,15 +147,15 @@ def network_create(entry: dict, session: str) -> list[str]:
 # iptables rules inside Netguard, as argument lists for `docker exec <netguard> iptables ...`.
 
 
-def input_rule(entry: dict, publisher_ip: str) -> list[str]:
-    """The one INPUT rule for a Portal: that publisher, that port, nothing else."""
-    return ["INPUT", "-p", "tcp", "-s", publisher_ip, "--dport", str(entry["port"]),
+def input_rule(entry: dict, publisher_ip: str, netguard_ip: str) -> list[str]:
+    """Allow only the publisher to the Portal address and port."""
+    return ["INPUT", "-p", "tcp", "-s", publisher_ip, "-d", netguard_ip, "--dport", str(entry["port"]),
             "-m", "comment", "--comment", f"{RULE_TAG}{entry['name']}", "-j", "ACCEPT"]
 
 
-def local_drop_rule(subnet: str) -> list[str]:
-    """Nothing in the Session may start a connection into the Portal network (NG_LOCAL, ADR-0002)."""
-    return ["NG_LOCAL", "-d", subnet, "-j", "DROP"]
+def local_drop_rule(subnet: str, name: str) -> list[str]:
+    """Drop new outbound connections to the Portal network; tag for cleanup."""
+    return ["NG_LOCAL", "-d", subnet, "-m", "comment", "--comment", f"{RULE_TAG}{name}", "-j", "DROP"]
 
 
 # Commands run inside the Session for a Portal that has a `command`.

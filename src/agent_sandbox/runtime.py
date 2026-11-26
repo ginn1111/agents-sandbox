@@ -100,6 +100,10 @@ class Docker:
         if plan.errors:
             raise MaskError("; ".join(plan.errors))
         self.require_daemon()
+        if plan.netguard_run:
+            daemon_os = self.run("version", "--format", "{{.Server.Os}}", check=False)
+            if daemon_os.code != 0 or daemon_os.out.strip() != "linux":
+                raise DockerError("Netguard requires a Linux Docker daemon; use a Linux Docker context or --offline")
         wanted = [plan.image] + ([plan.netguard_image] if plan.netguard_run else [])
         for image in wanted:
             if not self.has_image(image):
