@@ -126,7 +126,7 @@ Result: Ready
   - DNS is allowed only to the configured resolver.
   - `--add-host=host.docker.internal:host-gateway` is set on Linux; a hostname mapping alone does not grant access.
 - **Host Services:** defined as `host:port` in config. Netguard permits only explicitly activated entries. The agent never gets host credentials through them. Examples: DBX Web (`DBX_WEB_URL`), an LLM gateway.
-- **Host Browser (ADR-0008, ADR-0013):** off by default. Settings come only from global config or the CLI; activation requires the explicit CLI command. `check` warns when it is enabled. You start Chrome yourself with a dedicated `--user-data-dir`; `doctor` prints the command. Agents control it with `chrome-devtools-mcp`.
+- **Host Browser (ADR-0008, ADR-0013, ADR-0020):** off by default. Made available only by global config (`network.host_browser: true`) or `--host-browser`; project config setting the key is rejected. Activation requires `asb browser enable`, which opens `host.docker.internal:9222` (one TCP port) through the Netguard helper. `check`, `up` and `attach` warn on every Session where it is available. You start Chrome yourself with a dedicated `--user-data-dir`; `doctor` prints the command and, on Linux, a `socat` relay bound to the Docker gateway address. Agents control it with `asb-chrome-mcp`, which runs the pinned `chrome-devtools-mcp` against the host by IP address.
 - **`--offline`:** Docker `none` network. No Host Services or Portals.
 
 ## 7. Image contents
