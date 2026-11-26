@@ -10,6 +10,7 @@ from . import host_services
 from .config import ConfigError, load_config
 from .netguard import IMAGE as NETGUARD_IMAGE
 from .herdr import install_integrations
+from .kanban import ensure_board
 from .masks import MaskError
 from . import portal_cli, portals
 from .plan import IMAGE, plan
@@ -67,6 +68,7 @@ def _ensure_up(docker: Docker, p, out) -> bool:
         return False
     teardown_all(docker, p)  # publishers and Portal networks a crashed Session left behind
     docker.start(p)
+    ensure_board(docker, p)  # this Workspace's Hermes Kanban board (ADR-0020)
     print(f"Session started: {p.container_name} ({p.workspace})", file=out)
     return True
 

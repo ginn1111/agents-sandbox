@@ -33,6 +33,9 @@ def render(p: SessionPlan) -> str:
             lines.append(f"  {a['name']:<8} {' '.join(a['command'])}  (home {a['home']}, volume {a['volume']})")
         lines.append("Volumes:        " + ", ".join(p.volumes) + " (kept by `asb down`; `docker volume rm` to log out)")
         lines.append("")
+    if p.kanban:
+        lines.append(f"Kanban:   Hermes board '{p.kanban['board']}' in this Workspace's own volume {p.kanban['volume']} "
+                     f"(kept by `asb down`; only Hermes uses it)")
     if p.portals:
         lines.append("Portals:  (none started by `up`; `asb portal start <name>` publishes one on 127.0.0.1 only)")
         for e in p.portals:

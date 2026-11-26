@@ -88,7 +88,7 @@ def test_offline_sessions_have_no_portals(workspace):
 def test_plan_serialises_portals(workspace):
     import json
     d = json.loads(json.dumps(make_plan(workspace).to_dict()))
-    assert d["portals"][0]["name"] == "plannotator"
+    assert {"plannotator", "hermes-dashboard"} <= {p["name"] for p in d["portals"]}
 
 
 def test_url_is_loopback_with_the_configured_path():

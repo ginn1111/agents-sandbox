@@ -55,9 +55,9 @@ def test_agent_volume_names_do_not_depend_on_the_workspace(home):
     a, b = home / "one" / "api", home / "two" / "web"
     a.mkdir(parents=True)
     b.mkdir(parents=True)
-    va = {m["source"] for m in volume_mounts(make_plan(a).session_run)}
-    vb = {m["source"] for m in volume_mounts(make_plan(b).session_run)}
-    assert va == vb  # the login is shared across Workspaces
+    va = {m["source"] for m in volume_mounts(make_plan(a).session_run) if "kanban" not in m["source"]}
+    vb = {m["source"] for m in volume_mounts(make_plan(b).session_run) if "kanban" not in m["source"]}
+    assert va == vb  # the login is shared across Workspaces; only the Kanban volume is per Workspace (ADR-0020)
 
 
 def test_mise_has_one_shared_cache_volume_that_is_not_an_agent_home(workspace):
