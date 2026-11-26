@@ -54,7 +54,7 @@ def _parser() -> argparse.ArgumentParser:
     sv.add_argument("action", choices=("enable", "disable"))
     sv.add_argument("name")
     sv.add_argument("dir", nargs="?", default=None, metavar="DIR")
-    sub.add_parser("build", help="build the agent image")
+    sub.add_parser("build", help="build the agent, Netguard, and portal images")
     update_cmd.add_parser(sub)
     return p
 

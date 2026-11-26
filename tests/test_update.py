@@ -547,3 +547,9 @@ def test_default_runner_runs_an_argument_list_and_reports_a_missing_program():
     assert (r.code, r.out.strip(), r.err.strip()) == (3, "out", "err")
     assert update.default_runner(["/nonexistent/uv-binary", "tool"]).code == 127
     assert update.default_runner([sys.executable, "-c", "pass"], passthrough=True).code == 0
+
+
+def test_rollback_and_after_cli_error_mentions_after_cli(capsys):
+    with pytest.raises(SystemExit):
+        main(["update", "--rollback", "--after-cli"])
+    assert "--after-cli" in capsys.readouterr().err

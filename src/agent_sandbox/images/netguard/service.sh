@@ -68,11 +68,11 @@ resolve() {
 # Delete every rule tagged for service $1. Succeeds when there is none.
 remove_rules() {
     tag="asb-svc:$1"
-    rules=$(iptables -S "$CHAIN") || return 1
+    rules=$(iptables -w -S "$CHAIN") || return 1
     printf '%s\n' "$rules" | awk -v tag="$tag" -v chain="$CHAIN" '
         $1 == "-A" && $2 == chain { for (i = 3; i < NF; i++) if ($i == "--comment" && $(i + 1) == tag) { print; next } }' \
         | sed 's/^-A /-D /' | while IFS= read -r rule; do
-            iptables $rule || exit 1
+            iptables -w $rule || exit 1
         done
 }
 
@@ -86,13 +86,13 @@ done
 case "$action" in
     list)
         [ $# -eq 0 ] || usage
-        iptables -S "$CHAIN" | sed -n 's/.* --comment asb-svc:\([a-z0-9-]*\) .*/\1/p' | sort -u
+        iptables -w -S "$CHAIN" | sed -n 's/.* --comment asb-svc:\([a-z0-9-]*\) .*/\1/p' | sort -u
         ;;
     disable)
         [ $# -eq 1 ] || usage
         valid_name "$1" || fail "invalid service name '$1'"
         remove_rules "$1" || fail "cannot remove the rules of '$1'"
-        if iptables -S "$CHAIN" | grep -q -- "--comment asb-svc:$1 "; then
+        if iptables -w -S "$CHAIN" | grep -q -- "--comment asb-svc:$1 "; then
             fail "verify: rules of '$1' are still present"
         fi
         ;;
@@ -113,12 +113,12 @@ case "$action" in
         remove_rules "$name" || fail "cannot replace the rules of '$name'"
         tag="asb-svc:$name"
         for ip in $ips; do
-            if ! iptables -A "$CHAIN" -d "$ip" -p tcp --dport "$port" -m comment --comment "$tag" -j ACCEPT; then
+            if ! iptables -w -A "$CHAIN" -d "$ip" -p tcp --dport "$port" -m comment --comment "$tag" -j ACCEPT; then
                 remove_rules "$name" || true
                 fail "cannot allow $ip:$port"
             fi
         done
-        saved=$(iptables -S "$CHAIN") || { remove_rules "$name" || true; fail "verify: cannot read back $CHAIN"; }
+        saved=$(iptables -w -S "$CHAIN") || { remove_rules "$name" || true; fail "verify: cannot read back $CHAIN"; }
         for ip in $ips; do
             want="-A $CHAIN -d $ip/32 -p tcp -m tcp --dport $port -m comment --comment $tag -j ACCEPT"
             if ! printf '%s\n' "$saved" | grep -qxF -- "$want"; then

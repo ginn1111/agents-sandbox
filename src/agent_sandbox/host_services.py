@@ -135,8 +135,12 @@ def enabled(docker: "Docker", plan: "SessionPlan") -> set[str]:
 
 def probe_from_session(docker: "Docker", plan: "SessionPlan", entry: dict[str, Any]) -> bool:
     """Can the Session open a TCP connection to the service? bash's /dev/tcp, because the image has no nc."""
-    script = f"timeout {PROBE_SECONDS} bash -c 'exec 3<>/dev/tcp/{entry['host']}/{entry['port']}'"
-    return docker.run("exec", plan.container_name, "sh", "-c", script, check=False).code == 0
+    return docker.run(
+        "exec", plan.container_name,
+        "timeout", str(PROBE_SECONDS),
+        "bash", "-c", 'exec 3<>/dev/tcp/"$1"/"$2"', "_", str(entry["host"]), str(entry["port"]),
+        check=False,
+    ).code == 0
 
 
 def probe_from_host(entry: dict[str, Any]) -> bool:

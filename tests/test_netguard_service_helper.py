@@ -27,9 +27,10 @@ chain_file="$STUB_DIR/chain"
 [ -z "$STUB_IPTABLES_FAILS" ] || exit 1
 touch "$chain_file"
 norm() {
-    printf '%s\n' "$*" | sed -e 's/ -d \([0-9.]*\) / -d \1\/32 /' -e 's/ --dport / -m tcp --dport /' -e 's/ -m tcp -m tcp/ -m tcp/' \
-        -e 's/ --comment \([^ ]*\)/ -m comment --comment \1/' -e 's/ -m comment -m comment/ -m comment/'
+printf '%s\n' "$*" | sed -e 's/ -d \([0-9.]*\) / -d \1\/32 /' -e 's/ --dport / -m tcp --dport /' -e 's/ -m tcp -m tcp/ -m tcp/' \
+    -e 's/ --comment \([^ ]*\)/ -m comment --comment \1/' -e 's/ -m comment -m comment/ -m comment/'
 }
+[ "${1:-}" = "-w" ] && shift
 case "$1" in
     -A) shift; if [ -n "$STUB_ADD_SILENTLY_DROPS" ]; then exit 0; fi
         norm "-A $@" >> "$chain_file" ;;

@@ -100,3 +100,25 @@ def test_store_file_is_json_keyed_by_portal_and_variable(workspace):
     resolve(workspace)
     data = json.loads(generated.store_path("asb-x-1").read_text())
     assert set(data["hermes-dashboard"]) == {k for k in ENV if k != "PLAIN"}
+
+
+def test_a_symlinked_store_is_refused(workspace, tmp_path):
+    target = tmp_path / "target.json"
+    target.write_text("{}")
+    os.chmod(target, 0o600)
+    path = generated.store_path("asb-x-1")
+    path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    os.symlink(target, path)
+    with pytest.raises(PortalError, match="permissions"):
+        resolve(workspace)
+
+
+def test_write_refuses_symlinked_tmp_file(workspace, tmp_path):
+    victim = tmp_path / "victim.txt"
+    victim.write_text("keep")
+    path = generated.store_path("asb-x-1")
+    path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    os.symlink(victim, path.with_name(path.name + ".tmp"))
+    with pytest.raises(OSError):
+        resolve(workspace)
+    assert victim.read_text() == "keep"

@@ -254,3 +254,21 @@ def test_doctor_without_a_workspace_with_services_still_works(docker, capsys, mo
     monkeypatch.chdir(home)  # the home directory is not a usable Workspace
     code, out, _ = run(["doctor"], docker, capsys)
     assert code == 0 and "Docker daemon" in out and "Host Service" not in out
+
+
+def test_probe_from_session_passes_host_and_port_as_positional_args(workspace):
+    from agent_sandbox.runtime import Result
+
+    calls = []
+
+    class StubDocker:
+        def run(self, *args, **kwargs):
+            calls.append(args)
+            return Result(0, "", "")
+
+    p = make_plan(workspace)
+    assert host_services.probe_from_session(StubDocker(), p, {"host": "db.internal", "port": 5432})
+    assert len(calls) == 1
+    args = calls[0]
+    assert "db.internal" not in args[args.index("bash") + 2]
+    assert args[-2:] == ("db.internal", "5432")

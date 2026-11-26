@@ -85,7 +85,7 @@ def add_parser(sub) -> None:
 
 def check_args(parser: argparse.ArgumentParser, args) -> None:
     if args.rollback and (args.only or args.after_cli):
-        parser.error("update: --rollback cannot be combined with --only")
+        parser.error("update: --rollback cannot be combined with --only or --after-cli")
     if args.after_cli and args.only:
         parser.error("update: --after-cli cannot be combined with --only")
 
