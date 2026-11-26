@@ -104,6 +104,33 @@ def test_project_config_cannot_put_a_literal_in_a_login_variable(workspace):
         load_config(workspace)
 
 
+@pytest.mark.parametrize("var", [USER, PASSWORD, SECRET])
+def test_project_config_cannot_replace_a_generated_secret_by_dropping_the_login_key(workspace, var):
+    # replacing the built-in entry without `login` must not turn a generated secret into a committed literal
+    env = {USER: "'{generated}'", PASSWORD: "'{generated}'", SECRET: "'{generated}'", var: "hunter2"}
+    env_yaml = ", ".join(f"{k}: {v}" for k, v in env.items())
+    (workspace / ".agent-sandbox.yaml").write_text(
+        f"version: 1\nportals:\n  {DASH}:\n    port: 9119\n    command: [hermes, dashboard]\n    env: {{{env_yaml}}}\n")
+    with pytest.raises(ConfigError, match=var):
+        load_config(workspace)
+
+
+def test_project_config_cannot_replace_a_generated_secret_of_a_global_portal(workspace, home):
+    g = home / ".config" / "agent-sandbox" / "config.yaml"
+    g.parent.mkdir(parents=True)
+    g.write_text("version: 1\nportals: {web: {port: 80, command: [x], env: {TOKEN: '{generated}'}}}\n")
+    (workspace / ".agent-sandbox.yaml").write_text("version: 1\nportals: {web: {port: 80, command: [x], env: {TOKEN: abc}}}\n")
+    with pytest.raises(ConfigError, match="TOKEN"):
+        load_config(workspace)
+
+
+def test_project_config_may_keep_generated_values_and_change_other_variables(workspace):
+    (workspace / ".agent-sandbox.yaml").write_text(
+        f"version: 1\nportals:\n  {DASH}:\n    port: 9119\n    command: [hermes, dashboard]\n"
+        f"    env: {{{USER}: '{{generated}}', {PASSWORD}: '{{generated}}', EXTRA: x}}\n")
+    assert load_config(workspace).portals[DASH]["env"]["EXTRA"] == "x"
+
+
 def test_global_config_may_set_a_literal_login(workspace, home):
     g = home / ".config" / "agent-sandbox" / "config.yaml"
     g.parent.mkdir(parents=True)

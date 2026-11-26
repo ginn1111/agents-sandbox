@@ -44,6 +44,13 @@
 - Check: `test_the_dashboard_requires_the_generated_login`. By hand: `asb portal start hermes-dashboard`, open the URL, sign in with the printed login, open the Kanban tab and see the Workspace's board (named after the directory). This is the part automation cannot prove.
 - Result: _not run_.
 
+## 6a. Login cookie and WebSocket through `127.0.0.1:<random>`
+
+- Source-read (upstream `main` 04be1bc): the password-login POST is accepted when the browser's `Sec-Fetch-Site` is `same-origin` (`dashboard_auth/request_utils.py`, `cookie_origin_is_allowed`), which it is for the dashboard's own page at `127.0.0.1:<random>`; Host passes because the bind is `0.0.0.0`. Cookies are bare-named, `HttpOnly`, `SameSite=Lax`, not `Secure` over plain HTTP. The WebSocket gate (`ws_host_origin_reason`) accepts an Origin whose authority equals the Host the browser dialled ("a port forward ... `docker -p 8080:9119`: same-origin by definition"), so the publisher's random port does not break chat or the PTY.
+- Fails closed: a mismatch gives 403 or a refused WebSocket, never access without the login.
+- Check: by hand, item 6; then use the chat tab, which needs the WebSocket.
+- Result: _not run_.
+
 ## 7. The dashboard sees the same data as the Hermes pane
 
 - Assumption: the Portal `command` is `hermes ...` and `docker exec` resolves it through the Session's PATH, where `/opt/asb/bin/hermes` (the Agent-volume wrapper) is first, so the dashboard runs with `HOME=/agents/hermes` and shows the same Hermes sessions and config as the pane. If PATH resolution differs, the dashboard would run with `HOME=/tmp` and show an empty Hermes.

@@ -250,6 +250,20 @@ def _validate_login(login: Any, spec: dict, label: str, name: str, source: str) 
                 "Portal logins are not set from the project (ADR-0005, ADR-0010)")
 
 
+def _keep_generated(previous: dict | None, spec: dict, name: str) -> None:
+    """Project config may replace a Portal entry, but not a `{generated}` secret of the entry it
+    replaces (defaults or global config) with a literal: Portal secrets are never set from the
+    project (ADR-0005, ADR-0010). Leaving the variable out is allowed; the service then lacks it."""
+    if not previous:
+        return
+    env = spec.get("env", {})
+    for var, value in previous.get("env", {}).items():
+        if value == "{generated}" and var in env and env[var] != "{generated}":
+            raise ConfigError(
+                f"{PROJECT_FILE}: portals.{name}.env.{var} must stay {{generated}}; "
+                "Portal secrets cannot be set in project config (ADR-0005, ADR-0010)")
+
+
 def _validate_portals(portals: Any, label: str, source: str) -> dict[str, dict[str, Any]]:
     portals = _expect_map(portals, label, "portals")
     out = {}
@@ -383,6 +397,8 @@ def load_config(
                 for key in spec.get("env", {}):  # names only: values may be tokens
                     cfg.project_rules.append((f"agents.{name}.env", key))
         for name, spec in layer.get("portals", {}).items():
+            if source == "project":
+                _keep_generated(cfg.portals.get(name), spec, name)
             cfg.portals[name] = spec
             if source == "project":
                 cfg.project_rules.append((f"portals.{name}", f"port {spec['port']}"))
