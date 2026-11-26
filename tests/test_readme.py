@@ -24,7 +24,7 @@ def norm(text: str) -> str:
 
 def code_text(md: str) -> str:
     """Fenced blocks and inline code spans: where commands are written."""
-    blocks = re.findall(r"```[a-z]*\n(.*?)```", md, re.S)
+    blocks = [re.sub(r"\s#.*", "", b) for b in re.findall(r"```[a-z]*\n(.*?)```", md, re.S)]  # comments are prose
     spans = re.findall(r"`([^`\n]+)`", re.sub(r"```.*?```", "", md, flags=re.S))
     return "\n".join(blocks + spans)
 
@@ -71,7 +71,7 @@ def test_every_documented_flag_exists_in_the_parser():
     code = code_text(README)
     documented = set(re.findall(r"(?<![\w-])(--[a-z][a-z-]*)", code)) - {"--help"}
     # Flags that belong to host programs the README shows (Chrome, socat, ...), not to asb.
-    external = {"--remote-debugging-port", "--user-data-dir", "--no-first-run"}
+    external = {"--remote-debugging-port", "--user-data-dir", "--no-first-run", "--add-host"}
     assert documented - flags - external == set()
     assert flags <= documented, f"undocumented flags: {sorted(flags - documented)}"
 
