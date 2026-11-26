@@ -79,8 +79,8 @@ def test_up_starts_one_session_with_the_planned_arguments(workspace, docker, cap
     docker.has_image()
     code, out, _ = run(["up", str(workspace)], docker, capsys)
     assert code == 0
-    assert len(docker.containers) == 1
-    (c,) = docker.containers.values()
+    assert len(docker.containers) == 2  # Netguard and the Session
+    (c,) = [c for c in docker.containers.values() if c["labels"]["agent-sandbox"] == "session"]
     assert c["args"][:2] == ["run", "-d"]
     assert "--read-only" in c["args"]
     assert "started" in out.lower()
@@ -121,7 +121,7 @@ def test_two_workspaces_run_side_by_side(home, docker, capsys):
     b.mkdir(parents=True)
     run(["up", str(a)], docker, capsys)
     run(["up", str(b)], docker, capsys)
-    assert len(docker.containers) == 2
+    assert len(docker.containers) == 4  # two Sessions, each with its own Netguard
 
 
 def test_ls_lists_running_sessions_with_their_workspace(home, docker, capsys):
@@ -162,7 +162,7 @@ def test_attach_starts_the_session_then_opens_a_shell(workspace, docker, capsys)
     docker.has_image()
     code, _, _ = run(["attach", str(workspace)], docker, capsys)
     assert code == 0
-    assert len(docker.containers) == 1
+    assert len(docker.containers) == 2
     last = docker.calls[-1]
     assert last[0] == "exec" and "-it" in last and "bash" in last
 

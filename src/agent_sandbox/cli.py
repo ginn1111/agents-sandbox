@@ -7,12 +7,14 @@ import sys
 from pathlib import Path
 
 from .config import ConfigError, load_config
+from .netguard import IMAGE as NETGUARD_IMAGE
 from .plan import IMAGE, plan
 from .render import render
 from .runtime import Docker, DockerError
 from .workspace import WorkspaceError, resolve_workspace
 
 IMAGE_CONTEXT = Path(__file__).parent / "images" / "agent"
+NETGUARD_CONTEXT = Path(__file__).parent / "images" / "netguard"
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -42,6 +44,10 @@ def _plan_for(args):
 
 def _ensure_up(docker: Docker, p, out) -> bool:
     if docker.is_running(p.container_name):
+        if p.netguard_name and not docker.container_running(p.netguard_name):
+            raise DockerError(
+                f"Session {p.container_name} is running but its Netguard {p.netguard_name} has stopped, "
+                "so the Session has no network; run `asb down` and then `asb up`")
         print(f"Session already running: {p.container_name} ({p.workspace})", file=out)
         return False
     docker.start(p)
@@ -59,9 +65,10 @@ def _doctor(docker: Docker) -> int:
         docker.run("version", "--format", "{{.Server.Version}}")
         docker.require_daemon()
         print("ok   Docker daemon reachable")
-        has_image = docker.has_image()
-        print(f"{'ok  ' if has_image else 'FAIL'} agent image {IMAGE}" + ("" if has_image else " missing; run `asb build`"))
-        ok &= has_image
+        for label, image in (("agent", IMAGE), ("Netguard", NETGUARD_IMAGE)):
+            has_image = docker.has_image(image)
+            print(f"{'ok  ' if has_image else 'FAIL'} {label} image {image}" + ("" if has_image else " missing; run `asb build`"))
+            ok &= has_image
     except DockerError as e:
         print(f"FAIL Docker: {e}")
         ok = False
@@ -83,11 +90,9 @@ def main(argv: list[str] | None = None, *, docker: list[str] | None = None) -> i
             return d.attach(p.container_name)
         elif args.command == "down":
             p = _plan_for(args)
-            if d.is_running(p.container_name):
-                d.stop(p.container_name)
-                print(f"Session removed: {p.container_name}")
-            else:
-                print(f"Session not running: {p.container_name}")
+            was_running = d.is_running(p.container_name)
+            d.stop(p)  # the Session, then its Netguard (also removes a leftover Netguard)
+            print(f"Session removed: {p.container_name}" if was_running else f"Session not running: {p.container_name}")
         elif args.command == "ls":
             rows = d.running_sessions()
             if not rows:
@@ -99,6 +104,8 @@ def main(argv: list[str] | None = None, *, docker: list[str] | None = None) -> i
         elif args.command == "build":
             d.build(IMAGE_CONTEXT)
             print(f"Built {IMAGE}")
+            d.build(NETGUARD_CONTEXT, NETGUARD_IMAGE)
+            print(f"Built {NETGUARD_IMAGE}")
     except (WorkspaceError, ConfigError, DockerError) as e:
         print(f"error: {e}", file=sys.stderr)
         return 1
