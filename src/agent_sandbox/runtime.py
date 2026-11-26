@@ -6,12 +6,12 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
+from .netguard import READY_FILE
 from .plan import IMAGE, SessionPlan
 
 
 READY_TIMEOUT = 20.0  # seconds Netguard gets to apply and verify its rules
 READY_POLL = 0.2
-READY_FILE = "/run/netguard/ready"
 
 
 class DockerError(RuntimeError):
