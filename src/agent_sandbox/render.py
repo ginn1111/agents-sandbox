@@ -21,6 +21,12 @@ def render(p: SessionPlan) -> str:
     if not any(e.status == "MASKED" for e in p.entries):
         lines.append("No Secret files found; nothing will be masked.")
     lines.append("")
+    if p.host_services:
+        lines.append("Host Services: (all off until enabled; every other host port stays blocked)")
+        for h in p.host_services:
+            lines.append(f"  {h['name']} {h['host']}:{h['port']}  (enable: asb service enable {h['name']})")
+    else:
+        lines.append("Host Services:  none")
     if p.agents:
         lines.append("Agents:")
         for a in p.agents:

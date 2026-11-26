@@ -152,3 +152,34 @@ def probe_from_host(entry: dict[str, Any]) -> bool:
             return True
     except OSError:
         return False
+
+
+def doctor_lines(docker: "Docker", plan: "SessionPlan") -> list[tuple[str, str]]:
+    """(level, text) per configured Host Service for `asb doctor`. Levels: ok, warn, info.
+
+    A Host Service that does not answer is a warning, not a failure: the host app is the user's to
+    start (the CLI never starts host programs), so it does not make the setup broken.
+    """
+    from .runtime import DockerError  # local: runtime imports plan, which imports this module
+
+    try:
+        running = docker.is_running(plan.container_name)
+        active = enabled(docker, plan)
+    except DockerError:
+        running, active = False, set()
+    lines = []
+    for e in plan.host_services:
+        where = f"Host Service {e['name']} {e['host']}:{e['port']}"
+        if running and e["name"] in active:
+            if probe_from_session(docker, plan, e):
+                lines.append(("ok", f"{where} answers from the Session"))
+            else:
+                lines.append(("warn", f"{where} does not answer from the Session; is the host app running and "
+                                      "listening on an address the Docker host gateway reaches?"))
+        elif running:
+            lines.append(("info", f"{where} is not enabled in the Session; run `asb service enable {e['name']}`"))
+        elif probe_from_host(e):
+            lines.append(("ok", f"{where} answers on the host (not enabled: no Session is running)"))
+        else:
+            lines.append(("warn", f"{where} does not answer on the host; start the host app (no Session is running)"))
+    return lines

@@ -12,6 +12,7 @@ import sys
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
+from . import host_services as _hs
 from .config import Config
 from .netguard import IMAGE as NETGUARD_IMAGE
 from .netguard import RULES_ENV, rules as netguard_rules
@@ -74,6 +75,8 @@ class SessionPlan:
     netguard_image: str | None = None
     netguard_run: list[str] | None = None
     netguard_rules: list[str] = field(default_factory=list)
+    # Configured Host Services (ADR-0002, ADR-0013): available, never active after `up`.
+    host_services: list[dict] = field(default_factory=list)
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -217,6 +220,9 @@ def plan(workspace: Path, config: Config, *, uid: int | None = None, gid: int | 
                 "image Dockerfile (ADR-0007)"
             )
 
+    if ng_name is None and config.host_services:
+        warnings.append("offline: the configured Host Services cannot be reached (there is no network)")
+
     return SessionPlan(
         workspace=str(workspace),
         container_name=name,
@@ -235,4 +241,5 @@ def plan(workspace: Path, config: Config, *, uid: int | None = None, gid: int | 
         result="Blocked" if errors else "Ready",
         agents=agents,
         volumes=volumes,
+        host_services=_hs.plan_entries(config.host_services, ng_name),
     )
