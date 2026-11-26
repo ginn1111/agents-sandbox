@@ -21,6 +21,12 @@ def render(p: SessionPlan) -> str:
     if not any(e.status == "MASKED" for e in p.entries):
         lines.append("No Secret files found; nothing will be masked.")
     lines.append("")
+    if p.agents:
+        lines.append("Agents:")
+        for a in p.agents:
+            lines.append(f"  {a['name']:<8} {' '.join(a['command'])}  (home {a['home']}, volume {a['volume']})")
+        lines.append("Volumes:        " + ", ".join(p.volumes) + " (kept by `asb down`; `docker volume rm` to log out)")
+        lines.append("")
     for key, value in p.project_rules:
         note = " (weakens masking)" if key in WEAKENING else ""
         lines.append(f"Project config: {key} {value}{note}")

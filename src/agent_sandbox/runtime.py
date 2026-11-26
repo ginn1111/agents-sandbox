@@ -101,6 +101,9 @@ class Docker:
                 raise DockerError(f"image {image} not found; run `asb build` first")
         check_originals_exist(plan)
         prepare_mask_sources(plan)
+        # Volumes before anything starts, so a failure leaves no half-started Session. Never removed by the CLI.
+        for volume in plan.volumes:
+            self.run("volume", "create", "--label", "agent-sandbox=volume", volume)
         try:
             if plan.netguard_run:
                 self.run("rm", "-f", plan.netguard_name, check=False)  # a leftover from a crashed run

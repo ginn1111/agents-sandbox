@@ -47,9 +47,9 @@ def test_no_host_environment_is_passed(workspace, monkeypatch):
     assert all(not e.startswith("AWS_") for e in flag_values(args, "--env"))
 
 
-def test_workspace_is_the_only_mount_and_is_read_write(workspace):
+def test_workspace_is_the_only_host_mount_and_is_read_write(workspace):
     p = make_plan(workspace)
-    mounts = flag_values(p.session_run, "--mount")
+    mounts = [m for m in flag_values(p.session_run, "--mount") if m.startswith("type=bind")]
     assert len(mounts) == 1
     assert f"source={workspace.resolve()}" in mounts[0]
     assert "target=/workspace" in mounts[0]
@@ -97,7 +97,7 @@ def test_session_is_labelled_for_ls(workspace):
 def test_workspace_path_with_comma_stays_one_mount_argument(home):
     ws = home / "a,b"
     ws.mkdir()
-    mounts = flag_values(make_plan(ws).session_run, "--mount")
+    mounts = [m for m in flag_values(make_plan(ws).session_run, "--mount") if m.startswith("type=bind")]
     assert len(mounts) == 1
     assert f'"source={ws.resolve()}"' in mounts[0]  # CSV-quoted field, still one argument
 
@@ -121,7 +121,7 @@ def test_external_git_metadata_is_warned_not_mounted(workspace):
     (workspace / ".git").write_text("gitdir: /somewhere/else/.git/worktrees/x\n")
     p = make_plan(workspace)
     assert any("outside the Workspace" in w for w in p.warnings)
-    assert len(flag_values(p.session_run, "--mount")) == 1
+    assert len([m for m in flag_values(p.session_run, "--mount") if m.startswith("type=bind")]) == 1
 
 
 def test_project_config_rules_are_listed(workspace):

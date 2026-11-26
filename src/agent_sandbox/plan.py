@@ -20,6 +20,22 @@ from .discovery import Entry, discover
 IMAGE = "agent-sandbox-agent:latest"
 FALLBACK_UID = 1000
 
+# Agent volumes (ADR-0006): one per agent, named after the agent only, so the same
+# volume is reused by every Workspace and never by another agent.
+AGENT_HOME_ROOT = "/agents"
+MISE_VOLUME = "agent-sandbox-mise"
+MISE_DIR = "/mise"
+# Agents the image ships and pre-creates a writable home for (see images/agent/Dockerfile).
+IMAGE_AGENTS = frozenset({"hermes", "omp", "claude", "codex"})
+
+
+def agent_volume(name: str) -> str:
+    return f"agent-sandbox-{name}"
+
+
+def agent_home(name: str) -> str:
+    return f"{AGENT_HOME_ROOT}/{name}"
+
 # SPEC section 11. Shown by `check` and kept in sync with the README.
 LIMITS = [
     "Masking is by filename only; secrets inside other files are not detected.",
@@ -47,6 +63,11 @@ class SessionPlan:
     entries: list[Entry] = field(default_factory=list)
     mask_sources: dict[str, str] = field(default_factory=dict)  # kind (file|dir) -> empty read-only source
     errors: list[str] = field(default_factory=list)
+    # One entry per enabled agent: name, command, env, volume, home and `launch`,
+    # the argv to run inside the Session (`docker exec <session> <launch...>`).
+    agents: list[dict] = field(default_factory=list)
+    # Named volumes the Session mounts; `up` creates them and `down` never removes them.
+    volumes: list[str] = field(default_factory=list)
     limits: list[str] = field(default_factory=lambda: list(LIMITS))
     result: str = "Ready"
     netguard_name: str | None = None
@@ -81,6 +102,20 @@ def mask_source_dir() -> Path:
     """Where the empty read-only mask sources live. Never inside a Workspace."""
     state = os.environ.get("XDG_STATE_HOME") or str(Path.home() / ".local" / "state")
     return Path(state) / "agent-sandbox" / "masks"
+
+
+def _volume_mount_arg(volume: str, target: str) -> str:
+    return f"type=volume,source={volume},target={target}"
+
+
+def _agent_entry(name: str, command: list[str], env: dict[str, str]) -> dict:
+    home = agent_home(name)
+    # `env` sets only what the config names: nothing is inherited from the host.
+    launch = ["env", f"HOME={home}", *(f"{k}={v}" for k, v in sorted(env.items())), *command]
+    return {
+        "name": name, "command": list(command), "env": dict(env),
+        "volume": agent_volume(name), "home": home, "launch": launch,
+    }
 
 
 def _mask_mounts(entries: list[Entry], sources: dict[str, str]) -> list[str]:
@@ -143,6 +178,13 @@ def plan(workspace: Path, config: Config, *, uid: int | None = None, gid: int | 
         # an agent could otherwise fill the "empty" mask source through /workspace
         errors.append(f"mask sources ({root}) are inside the Workspace; set XDG_STATE_HOME elsewhere")
 
+    agents = [_agent_entry(n, config.agents[n], config.agent_env.get(n, {})) for n in sorted(config.agents)]
+    volumes = sorted({a["volume"] for a in agents} | {MISE_VOLUME})
+    volume_mounts: list[str] = []
+    for a in agents:
+        volume_mounts += ["--mount", _volume_mount_arg(a["volume"], a["home"])]
+    volume_mounts += ["--mount", _volume_mount_arg(MISE_VOLUME, MISE_DIR)]
+
     args = [
         "run", "-d",
         "--name", name,
@@ -161,11 +203,19 @@ def plan(workspace: Path, config: Config, *, uid: int | None = None, gid: int | 
         "--env", "HOME=/tmp",
         "--mount", _mount_arg(workspace, "/workspace"),
         *_mask_mounts(found.entries, sources),
+        *volume_mounts,
         "-w", "/workspace",
         IMAGE,
     ]
 
     warnings = list(found.warnings)
+    for a in agents:
+        if a["name"] not in IMAGE_AGENTS:
+            warnings.append(
+                f"agent '{a['name']}' is not installed in the image, and Docker creates its volume "
+                f"{a['volume']} root-owned, so {a['home']} may not be writable; add the agent to the "
+                "image Dockerfile (ADR-0007)"
+            )
 
     return SessionPlan(
         workspace=str(workspace),
@@ -183,4 +233,6 @@ def plan(workspace: Path, config: Config, *, uid: int | None = None, gid: int | 
         mask_sources=sources,
         errors=errors,
         result="Blocked" if errors else "Ready",
+        agents=agents,
+        volumes=volumes,
     )

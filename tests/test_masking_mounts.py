@@ -25,8 +25,13 @@ def mounts(p):
     return [parse_mount(args[i + 1]) for i, a in enumerate(args) if a == "--mount"]
 
 
+def bind_mounts(p):
+    """Workspace and mask mounts; the agent and mise volumes (ticket #7) are not bind mounts."""
+    return [m for m in mounts(p) if m["type"] == "bind"]
+
+
 def mask_mounts(p):
-    return {m["target"]: m for m in mounts(p) if m["target"] != "/workspace"}
+    return {m["target"]: m for m in bind_mounts(p) if m["target"] != "/workspace"}
 
 
 def touch(ws, rel, text="x"):
@@ -72,7 +77,7 @@ def test_symlink_secret_is_masked_at_the_resolved_real_path(workspace):
 
 def test_workspace_mount_stays_read_write_and_masks_add_only_readonly_mounts(workspace):
     touch(workspace, ".env")
-    ms = mounts(make_plan(workspace))
+    ms = bind_mounts(make_plan(workspace))
     ws = [m for m in ms if m["target"] == "/workspace"]
     assert len(ws) == 1 and "readonly" not in ws[0]
     assert all("readonly" in m for m in ms if m["target"] != "/workspace")
@@ -82,7 +87,7 @@ def test_workspace_mount_stays_read_write_and_masks_add_only_readonly_mounts(wor
 def test_no_masks_means_no_mask_sources_and_only_the_workspace_mount(workspace):
     touch(workspace, "README.md")
     p = make_plan(workspace)
-    assert p.mask_sources == {} and len(mounts(p)) == 1
+    assert p.mask_sources == {} and len(bind_mounts(p)) == 1
 
 
 def test_paths_with_commas_quotes_and_spaces_stay_one_mount_argument_each(workspace):
@@ -90,7 +95,7 @@ def test_paths_with_commas_quotes_and_spaces_stay_one_mount_argument_each(worksp
     touch(workspace, rel)
     p = make_plan(workspace)
     assert set(mask_mounts(p)) == {"/workspace/" + rel}
-    assert [a for a in p.session_run if a == "--mount"].__len__() == 2
+    assert len(bind_mounts(p)) == 2
 
 
 def test_hard_link_aliases_get_their_own_mounts(workspace):
@@ -244,3 +249,26 @@ def test_originals_are_byte_identical_after_up_and_down(secret_ws, docker, capsy
     main(["down", str(secret_ws)], docker=docker.command)
     assert snap() == before
     assert sorted(x.name for x in secret_ws.iterdir()) == [".env", ".ssh"]
+
+
+def test_up_orders_volumes_netguard_session_and_down_keeps_volumes(secret_ws, docker, capsys):
+    """Tickets #3, #5, #7 together: volumes, then Netguard, then the Session with masks; down removes no volume."""
+    docker.has_image()
+    assert up(secret_ws, docker, capsys)[0] == 0
+    kinds = [c[0] + ("-" + c[1] if c[0] == "volume" else "") for c in docker.calls if c[0] in ("volume", "run")]
+    assert kinds[0] == "volume-create" and kinds[-2:] == ["run", "run"]
+    assert set(kinds[:-2]) == {"volume-create"}
+    netguard, session = [c for c in docker.calls if c[0] == "run"]
+    assert "agent-sandbox=netguard" in netguard and "agent-sandbox=session" in session
+    assert any(a.startswith("container:") for a in session)
+    assert main(["down", str(secret_ws)], docker=docker.command) == 0
+    assert docker.containers == {}
+    assert not any(c[:2] in (["volume", "rm"], ["volume", "prune"]) for c in docker.calls)
+
+
+def test_failed_mask_verification_removes_netguard_too(secret_ws, docker, capsys):
+    docker.has_image()
+    docker.set(drop_mounts=["/workspace/.env"])
+    code, _, err = up(secret_ws, docker, capsys)
+    assert code != 0 and err
+    assert docker.containers == {}
