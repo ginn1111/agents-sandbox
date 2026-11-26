@@ -1,13 +1,18 @@
-"""Seam 1: run the real Netguard entrypoint script against stub `iptables*` and `ip` binaries.
+"""Seam 1: run the real Netguard entrypoint script against stubbed `iptables*` and `ip` commands.
 
 Proves the fail-closed behaviour of the script itself: it signals ready only after the rules are
 applied and verified, and it exits non-zero without a ready file in every failure case. No Docker.
 What the kernel then enforces is proved by the Seam 2 tests.
+
+The stubs are executable scripts, so they need a directory that is not mounted noexec (often /tmp).
+The first candidate that can execute is used; without one, these tests skip.
 """
 import os
+import pwd
+import shutil
 import stat
 import subprocess
-import sys
+import tempfile
 import time
 from pathlib import Path
 
@@ -18,68 +23,97 @@ from agent_sandbox.netguard import BLOCKED_RANGES, RULES_ENV, rules
 ENTRYPOINT = Path(__file__).parents[1] / "src" / "agent_sandbox" / "images" / "netguard" / "entrypoint.sh"
 DOCKERFILE = ENTRYPOINT.with_name("Dockerfile")
 
-STUB_RESTORE = '#!/bin/sh\n[ -z "$STUB_RESTORE_FAILS" ] || { echo "restore failed" >&2; exit 1; }\ncat > "$STUB_DIR/applied"\n'
-STUB_IPTABLES = '#!/bin/sh\n[ -z "$STUB_IPTABLES_FAILS" ] || exit 1\nprintf \'%s\\n\' "$*" >> "$STUB_DIR/appended"\n'
-STUB_SAVE = '#!/bin/sh\ncat "$STUB_DIR/applied" || exit 1\n[ ! -f "$STUB_DIR/appended" ] || cat "$STUB_DIR/appended"\n'
-STUB_IP = """#!/bin/sh
+STUBS = {
+    "iptables-restore": """#!/bin/sh
+[ -z "$STUB_RESTORE_FAILS" ] || { echo "restore failed" >&2; exit 1; }
+cat > "$STUB_DIR/applied"
+""",
+    "iptables": """#!/bin/sh
+[ -z "$STUB_IPTABLES_FAILS" ] || exit 1
+printf '%s\\n' "$*" >> "$STUB_DIR/appended"
+""",
+    "iptables-save": """#!/bin/sh
+cat "$STUB_DIR/applied" || exit 1
+[ ! -f "$STUB_DIR/appended" ] || cat "$STUB_DIR/appended"
+""",
+    "ip": """#!/bin/sh
 case "$*" in
-  *route*) echo "default via ${STUB_GATEWAY:-172.17.0.1} dev eth0" ;;
-  *addr*) echo "2: eth0    inet ${STUB_ADDR:-172.17.0.2/16} brd 172.17.255.255 scope global eth0" ;;
+    *route*) echo "default via ${STUB_GATEWAY:-172.17.0.1} dev eth0" ;;
+    *addr*) echo "2: eth0    inet ${STUB_ADDR:-172.17.0.2/16} brd 172.17.255.255 scope global eth0" ;;
 esac
-"""
+""",
+}
+
+
+def _can_exec_in(directory):
+    try:
+        d = Path(tempfile.mkdtemp(dir=directory, prefix=".asb-exec-probe-"))
+    except OSError:
+        return None
+    probe = d / "probe"
+    probe.write_text("#!/bin/sh\nexit 0\n")
+    probe.chmod(0o755)
+    try:
+        ok = subprocess.run([str(probe)], capture_output=True).returncode == 0
+    except OSError:
+        ok = False
+    shutil.rmtree(d, ignore_errors=True)
+    return directory if ok else None
+
+
+def _exec_dir():
+    real_home = pwd.getpwuid(os.getuid()).pw_dir
+    for candidate in (tempfile.gettempdir(), "/dev/shm", "/var/tmp", real_home):
+        if candidate and os.path.isdir(candidate) and _can_exec_in(candidate):
+            return candidate
+    return None
+
+
+EXEC_DIR = _exec_dir()
+pytestmark = pytest.mark.skipif(EXEC_DIR is None, reason="no directory that allows executing stub scripts")
 
 
 @pytest.fixture
 def env(tmp_path):
-    stubs = tmp_path / "bin"
-    stubs.mkdir()
-    for name, body in (("iptables-restore", STUB_RESTORE), ("iptables", STUB_IPTABLES),
-                       ("iptables-save", STUB_SAVE), ("ip", STUB_IP)):
-        f = stubs / name
-        f.write_text(body)
-        f.chmod(f.stat().st_mode | stat.S_IEXEC)
+    bin_dir = Path(tempfile.mkdtemp(dir=EXEC_DIR, prefix="asb-stubs-"))
     resolv = tmp_path / "resolv.conf"
     resolv.write_text("nameserver 192.168.1.1\nnameserver 8.8.8.8\nnameserver 2001:4860:4860::8888\nsearch lan\n")
     ipv6 = tmp_path / "disable_ipv6"
     ipv6.write_text("1\n")
-    run_dir = tmp_path / "run"
-    return {
-        "PATH": f"{stubs}:/usr/bin:/bin",
+    yield {
+        "PATH": f"{bin_dir}:/usr/bin:/bin",
         "STUB_DIR": str(tmp_path),
+        "STUB_BIN": str(bin_dir),
         RULES_ENV: ";".join(rules()),
         "ASB_NETGUARD_RESOLV_CONF": str(resolv),
         "ASB_NETGUARD_IPV6_FLAG": str(ipv6),
-        "ASB_NETGUARD_RUN_DIR": str(run_dir),
+        "ASB_NETGUARD_RUN_DIR": str(tmp_path / "run"),
+        "STUBS": dict(STUBS),  # name -> script body; tests replace or drop entries
     }
+    shutil.rmtree(bin_dir, ignore_errors=True)
 
 
-def start(env):
-    return subprocess.Popen(["sh", str(ENTRYPOINT)], env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-
-
-def finish(p, ready_file, wait=3.0):
-    """Wait until the script is ready or has exited. Returns (exit code or None if idling, stderr)."""
-    deadline = time.time() + wait
-    while time.time() < deadline:
-        if ready_file.exists() or p.poll() is not None:
-            break
-        time.sleep(0.02)
-    if p.poll() is None:
-        p.terminate()
-        p.wait(timeout=5)
-        return None, ""
-    return p.returncode, p.stderr.read()
-
-
-def run(env, wait=3.0):
+def run(env, wait=3.0, stop_at_ready=True):
+    """Start the entrypoint, wait until it is ready or has exited. Returns (exit code or None, stderr, ready file)."""
+    env = dict(env)
+    for name, body in env.pop("STUBS").items():
+        f = Path(env["STUB_BIN"]) / name
+        f.write_text(body)
+        f.chmod(f.stat().st_mode | stat.S_IEXEC)
     ready = Path(env["ASB_NETGUARD_RUN_DIR"]) / "ready"
-    p = start(env)
+    p = subprocess.Popen(["sh", str(ENTRYPOINT)], env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
     try:
-        code, err = finish(p, ready, wait)
+        deadline = time.time() + wait
+        while time.time() < deadline and not (stop_at_ready and ready.exists()) and p.poll() is None:
+            time.sleep(0.02)
+        if p.poll() is None:  # ready and idling (or hung: the ready-file assertions catch that)
+            p.terminate()
+            p.wait(timeout=5)
+            return None, "", ready
+        return p.returncode, p.stderr.read(), ready
     finally:
         if p.poll() is None:
             p.kill()
-    return code, err, ready
 
 
 def applied(env):
@@ -91,9 +125,8 @@ def appended(env):
     return f.read_text().splitlines() if f.exists() else []
 
 
-def test_script_is_posix_sh_and_has_no_bashisms():
-    first = ENTRYPOINT.read_text().splitlines()[0]
-    assert first == "#!/bin/sh"
+def test_script_is_posix_sh():
+    assert ENTRYPOINT.read_text().splitlines()[0] == "#!/bin/sh"
     assert subprocess.run(["sh", "-n", str(ENTRYPOINT)]).returncode == 0
 
 
@@ -143,19 +176,27 @@ def test_no_ready_file_when_adding_resolver_or_local_rules_fails(env):
 
 
 def test_no_ready_file_when_a_required_tool_is_missing(env):
-    env["PATH"] = "/usr/bin:/bin"  # stubs gone; real iptables-restore is not installed in the test host
-    if subprocess.run(["sh", "-c", "command -v iptables-restore"], env=env, capture_output=True).returncode == 0:
+    del env["STUBS"]["iptables-restore"]
+    if shutil.which("iptables-restore", path="/usr/bin:/bin"):
         pytest.skip("host has a real iptables-restore")
-    code, _, ready = run(env)
+    code, err, ready = run(env)
     assert code not in (None, 0) and not ready.exists()
+    assert "iptables-restore" in err
 
 
-def test_no_ready_file_when_the_applied_rules_do_not_verify(env, tmp_path):
+def test_no_ready_file_when_the_applied_rules_do_not_verify(env):
     # a restore that silently applies nothing must not be reported as ready
-    (tmp_path / "bin" / "iptables-restore").write_text("#!/bin/sh\ncat > /dev/null\n")
+    env["STUBS"]["iptables-restore"] = '#!/bin/sh\ncat > /dev/null\n: > "$STUB_DIR/applied"\n'
     code, err, ready = run(env)
     assert code not in (None, 0) and not ready.exists()
     assert "verify" in err.lower()
+
+
+def test_every_blocked_range_is_checked_by_the_verification(env):
+    assert "100.64.0.0/10" in BLOCKED_RANGES
+    env["STUBS"]["iptables-restore"] = "#!/bin/sh\ngrep -v -- '-d 100.64.0.0/10 ' > \"$STUB_DIR/applied\"\n"
+    code, _, ready = run(env)
+    assert code not in (None, 0) and not ready.exists()
 
 
 def test_no_ready_file_when_ipv6_is_not_disabled(env):
@@ -171,18 +212,18 @@ def test_no_ready_file_when_ipv6_state_cannot_be_read(env):
     assert code not in (None, 0) and not ready.exists()
 
 
-def test_every_blocked_range_is_checked_by_the_verification(env, tmp_path):
-    # drop one blocked range from what the stub "applied": the script must notice
-    (tmp_path / "bin" / "iptables-restore").write_text(
-        "#!/bin/sh\ngrep -v -- '-d 100.64.0.0/10 ' > \"$STUB_DIR/applied\"\n")
-    code, _, ready = run(env)
-    assert "100.64.0.0/10" in BLOCKED_RANGES
+def test_stale_ready_file_is_removed_on_start(env):
+    ready = Path(env["ASB_NETGUARD_RUN_DIR"]) / "ready"
+    ready.parent.mkdir(parents=True)
+    ready.write_text("")
+    env["STUB_RESTORE_FAILS"] = "1"
+    code, _, _ = run(env, stop_at_ready=False)  # the stale file must not count as ready
     assert code not in (None, 0) and not ready.exists()
 
 
 def test_netguard_dockerfile_is_alpine_with_iptables_and_the_entrypoint():
-    text = DOCKERFILE.read_text()
-    assert text.startswith("# ") or text.startswith("FROM alpine")
+    lines = DOCKERFILE.read_text().splitlines()
+    text = "\n".join(lines)
     assert "FROM alpine:" in text and "iptables" in text
     assert "entrypoint.sh" in text and "ENTRYPOINT" in text
-    assert "USER" not in text.replace("# USER", "")  # needs root + NET_ADMIN to run iptables
+    assert not any(l.startswith("USER") for l in lines)  # needs root + NET_ADMIN to run iptables
