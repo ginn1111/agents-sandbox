@@ -16,6 +16,7 @@ from .plan import IMAGE, plan
 from .portal_runtime import teardown_all
 from .render import render
 from .runtime import Docker, DockerError
+from . import update as update_cmd
 from .unmasked import attach_warnings
 from .workspace import WorkspaceError, resolve_workspace
 
@@ -46,6 +47,7 @@ def _parser() -> argparse.ArgumentParser:
     sv.add_argument("name")
     sv.add_argument("dir", nargs="?", default=None, metavar="DIR")
     sub.add_parser("build", help="build the agent image")
+    update_cmd.add_parser(sub)
     return p
 
 
@@ -121,8 +123,11 @@ def _doctor(docker: Docker, directory: str | None = None) -> int:
     return 0 if ok else 1
 
 
-def main(argv: list[str] | None = None, *, docker: list[str] | None = None) -> int:
-    args = _parser().parse_args(argv)
+def main(argv: list[str] | None = None, *, docker: list[str] | None = None, runner=None) -> int:
+    parser = _parser()
+    args = parser.parse_args(argv)
+    if args.command == "update":
+        update_cmd.check_args(parser, args)
     d = Docker(docker)
     try:
         if args.command == "check":
@@ -161,6 +166,8 @@ def main(argv: list[str] | None = None, *, docker: list[str] | None = None) -> i
             return _doctor(d, args.dir)
         elif args.command == "service":
             _service(d, args)
+        elif args.command == "update":
+            return update_cmd.run_update(args, d, runner)
         elif args.command == "build":
             d.build(IMAGE_CONTEXT)
             print(f"Built {IMAGE}")
@@ -168,7 +175,8 @@ def main(argv: list[str] | None = None, *, docker: list[str] | None = None) -> i
             print(f"Built {NETGUARD_IMAGE}")
             d.build(PORTAL_CONTEXT, portals.IMAGE)
             print(f"Built {portals.IMAGE}")
-    except (WorkspaceError, ConfigError, DockerError, MaskError, host_services.ServiceError, portals.PortalError) as e:
+    except (WorkspaceError, ConfigError, DockerError, MaskError, host_services.ServiceError, portals.PortalError,
+            update_cmd.UpdateError) as e:
         print(f"error: {e}", file=sys.stderr)
         return 1
     return 0

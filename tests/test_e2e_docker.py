@@ -797,3 +797,41 @@ def test_no_herdr_socket_from_the_host_is_visible_in_the_session(session, home):
     assert all(m["Type"] != "bind" or m["Destination"] == "/workspace" for m in _json.loads(mounts))
     # the Session's herdr socket is its own: it lives under the Session's HOME (a tmpfs), not on the host
     assert not any(str(home) in m.get("Source", "") for m in _json.loads(mounts))
+
+
+# -- asb update and rollback (ticket 11, ADR-0012, ADR-0022). UNVERIFIED: written without a Docker daemon.
+
+def _image_id(ref):
+    return subprocess.run(["docker", "image", "inspect", "--format", "{{.Id}}", ref],
+                          capture_output=True, text=True).stdout.strip()
+
+
+def test_update_image_then_rollback_moves_latest_and_spares_a_running_session(workspace):
+    from agent_sandbox.plan import IMAGE as AGENT
+    assert main(["build"]) == 0
+    assert main(["up", str(workspace)]) == 0
+    name = session_name(workspace.resolve())
+    try:
+        before = _image_id(AGENT)
+        assert main(["update", "--only", "image"]) == 0
+        built = _image_id(AGENT)
+        assert built != before
+        sh(name, "true")  # the Session is still running, on the image it started with
+        assert subprocess.run(["docker", "inspect", "--format", "{{.Image}}", name],
+                              capture_output=True, text=True).stdout.strip() == before
+        assert main(["update", "--rollback"]) == 0
+        assert _image_id(AGENT) == before
+    finally:
+        main(["down", str(workspace)])
+
+
+def test_update_integrations_keeps_the_agent_volume_contents(workspace):
+    assert main(["build"]) == 0
+    assert main(["up", str(workspace)]) == 0
+    name = session_name(workspace.resolve())
+    try:
+        sh(name, "echo token > /agents/hermes/login.json")
+        assert main(["update", "--only", "integrations"]) == 0
+        assert sh(name, "cat /agents/hermes/login.json").stdout.strip() == "token"
+    finally:
+        main(["down", str(workspace)])
