@@ -103,18 +103,21 @@ class PortalController:
         self.d.run(*portals.network_create(entry, session))
         self.d.run("network", "connect", entry["network"], ng)
         ng_ip = _network_ips(self.d, ng, entry["network"])
-        self.d.run(*portals.publisher_run(entry, session, ng_ip))
-        self.d.run("network", "connect", entry["network"], entry["publisher"])
-        pub_ip = _network_ips(self.d, entry["publisher"], entry["network"])
         subnet = self.d.run("network", "inspect", "--format", "{{(index .IPAM.Config 0).Subnet}}", entry["network"]).out.strip()
         if not subnet:
             raise portals.PortalError(f"cannot read the subnet of {entry['network']}")
-        # Drop first, then admit: the Session can never start a connection into this network,
-        # and only the publisher can reach this one port.
-        for rule in (portals.local_drop_rule(subnet), portals.input_rule(entry, pub_ip)):
-            _ng(self.d, ng, "-A", *rule)
-            _ng(self.d, ng, "-C", *rule)  # read back; fail closed if it is not there
+        # The Session shares Netguard's network namespace, so it sees this new interface too.
+        # Drop that subnet for everything the Session starts *before* anything else lives on it.
+        self._rule("-A", portals.local_drop_rule(subnet))
+        self.d.run(*portals.publisher_run(entry, session, ng_ip))
+        self.d.run("network", "connect", entry["network"], entry["publisher"])
+        self._rule("-A", portals.input_rule(entry, _network_ips(self.d, entry["publisher"], entry["network"])))
         self.host_port(entry)  # raises unless Docker reports 127.0.0.1 only
+
+    def _rule(self, op: str, rule: list[str]) -> None:
+        """Apply one Netguard rule and read it back; fail closed if it is not there."""
+        _ng(self.d, self.plan.netguard_name, op, *rule)
+        _ng(self.d, self.plan.netguard_name, "-C", *rule)
 
     def _unpublish(self, entry: dict) -> None:
         """Remove everything a start creates. Safe to call at any point, and twice."""

@@ -335,3 +335,13 @@ def test_build_builds_the_portal_image_and_doctor_checks_it(pdocker, tmp_path, m
     assert code == 0 and "agent-sandbox-portal:latest" in d.state()["images"]
     code, out, _ = run(["doctor"], d, capsys)
     assert "agent-sandbox-portal:latest" in out and code == 0
+
+
+def test_the_session_is_walled_off_from_the_portal_network_before_the_publisher_exists(up, pdocker, capsys):
+    n = len(pdocker.calls)
+    start(up, pdocker, capsys)
+    after = pdocker.calls[n:]
+    drop = next(i for i, c in enumerate(after) if "iptables" in c and "NG_LOCAL" in c and "-A" in c)
+    publisher_run = next(i for i, c in enumerate(after) if c[:1] == ["run"])
+    admit = next(i for i, c in enumerate(after) if "iptables" in c and "INPUT" in c and "-A" in c)
+    assert drop < publisher_run < admit

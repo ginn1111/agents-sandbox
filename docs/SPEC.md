@@ -140,7 +140,7 @@ Result: Ready
 
 - A Portal is defined in config as a container port, an optional background `command`, optional env, and a URL path.
 - Only explicitly started Portals are published to the host at `127.0.0.1` on a randomly allocated host port. Stopping a Portal releases its host port; the URL may change the next time it starts. `start` prints the current URL and any generated login; `status` shows the current URL while published. The CLI never opens a browser.
-- Each Portal supports `start`, `stop`, `restart`, and `status` without restarting the Session or Netguard (ADR-0013). The CLI manages the service process only if it started that process through the configured `command`; otherwise it manages host publication only. `status` reports publication separately from service state.
+- Each Portal supports `start`, `stop`, `restart`, and `status` without restarting the Session or Netguard (ADR-0013). Publication is live, through one publisher container per started Portal (ADR-0018). The CLI manages the service process only if it started that process through the configured `command`; otherwise it manages host publication only. `status` reports publication separately from service state.
 - Portal activation belongs to the current Session. `asb down` unpublishes its Portals and releases their host ports. On the next `asb up`, every Portal starts off and must be started explicitly again. Configuration and `{generated}` logins persist across Sessions; the CLI stores generated secrets per Workspace, outside the Workspace.
 - Built-in entries:
   - **plannotator**, using `PLANNOTATOR_REMOTE=1` and port 19432;
