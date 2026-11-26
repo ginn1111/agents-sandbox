@@ -195,6 +195,24 @@ def test_symlink_to_directory_with_secret_name_masks_the_directory(workspace):
     assert entries(p, "MASKED")["keys"].kind == "dir"
 
 
+def test_symlink_to_directory_matches_dir_only_secret_pattern(workspace):
+    project(workspace, "secrets: {mask: ['secrets/']}\n")
+    touch(workspace, "real_secrets/api.key")
+    os.symlink("real_secrets", workspace / "secrets")
+    p = make_plan(workspace)
+    assert masked(p) == {"real_secrets": "target of symlink secrets"}
+    assert entries(p, "MASKED")["real_secrets"].kind == "dir"
+
+
+def test_symlink_to_directory_respects_dir_only_allow_pattern(workspace):
+    project(workspace, "secrets: {mask: ['**/vault/**'], allow: ['vault/']}\n")
+    touch(workspace, "real_vault/readme.txt")
+    os.symlink("real_vault", workspace / "vault")
+    p = make_plan(workspace)
+    assert "vault" in entries(p, "ALLOWED")
+    assert "real_vault" not in masked(p)
+
+
 def test_symlink_pointing_outside_is_never_followed_and_is_reported(workspace, home):
     outside = home / "outside"
     outside.mkdir()
@@ -299,6 +317,20 @@ def test_discovery_never_opens_secret_files(workspace):
     assert list(masked(result["plan"])) == [".env"]
 
 
+def test_discovery_skips_fifo_named_dot_git(workspace):
+    os.mkfifo(workspace / ".git")  # opening it in external_git() would block forever
+    result = {}
+
+    def run():
+        result["plan"] = make_plan(workspace)
+
+    t = threading.Thread(target=run, daemon=True)
+    t.start()
+    t.join(5)
+    assert not t.is_alive(), "discovery opened .git fifo"
+    assert result["plan"].result == "Ready"
+
+
 # ------------------------------------------------------------------ failure and ordering
 
 
@@ -331,6 +363,24 @@ def test_unreadable_secret_directory_is_still_masked_without_listing_it(workspac
     assert ".ssh" in masked(p)
     # its inode contents could not be scanned for hard links: the plan must say so
     assert p.result != "Ready"
+
+
+def test_deep_directory_recursion_fails_closed_with_error(workspace):
+    import inspect
+    import sys
+
+    cur = workspace
+    for i in range(40):
+        cur = cur / f"d{i}"
+        cur.mkdir()
+    old = sys.getrecursionlimit()
+    sys.setrecursionlimit(len(inspect.stack()) + 20)
+    try:
+        p = make_plan(workspace)
+    finally:
+        sys.setrecursionlimit(old)
+    assert p.result != "Ready"
+    assert p.errors
 
 
 def test_entries_are_sorted_and_the_plan_is_deterministic(workspace):

@@ -104,25 +104,31 @@ class _Scan:
         if rel in self.scanned_roots:
             return
         self.scanned_roots.add(rel)
-        for e in self._entries(abs_dir, rel, "masked directory, needed to find hard links"):
-            child = f"{rel}/{e.name}"
-            if e.is_symlink():
-                self.pending.append((child, e.path))
-            elif e.is_dir(follow_symlinks=False):
-                if self.skip.first(child, True) is None:
-                    self.walk_masked(e.path, child)
-            else:
-                self._note_inode(e, child, masked_source=True)
+        try:
+            for e in self._entries(abs_dir, rel, "masked directory, needed to find hard links"):
+                child = f"{rel}/{e.name}"
+                if e.is_symlink():
+                    self.pending.append((child, e.path))
+                elif e.is_dir(follow_symlinks=False):
+                    if self.skip.first(child, True) is None:
+                        self.walk_masked(e.path, child)
+                else:
+                    self._note_inode(e, child, masked_source=True)
+        except RecursionError:
+            self.out.errors.append(f"directory nesting too deep at {rel or '.'}; cannot scan completely")
 
     def walk(self, abs_dir: str, rel: str) -> None:
-        for e in self._entries(abs_dir, rel, "Workspace directory"):
-            child = f"{rel}/{e.name}" if rel else e.name
-            if e.is_symlink():
-                self._symlink(e, child)
-            elif e.is_dir(follow_symlinks=False):
-                self._dir(e, child)
-            else:
-                self._file(e, child)
+        try:
+            for e in self._entries(abs_dir, rel, "Workspace directory"):
+                child = f"{rel}/{e.name}" if rel else e.name
+                if e.is_symlink():
+                    self._symlink(e, child)
+                elif e.is_dir(follow_symlinks=False):
+                    self._dir(e, child)
+                else:
+                    self._file(e, child)
+        except RecursionError:
+            self.out.errors.append(f"directory nesting too deep at {rel or '.'}; cannot scan completely")
 
     def _dir(self, e: os.DirEntry, rel: str) -> None:
         skip = self.skip.first(rel, True)
@@ -155,12 +161,15 @@ class _Scan:
         self._note_inode(e, rel, masked_source=False)
 
     def _symlink(self, e: os.DirEntry, rel: str) -> None:
-        mask = self.mask.first(rel, False)
+        real = os.path.realpath(e.path)
+        inside = real == self.ws_real or real.startswith(self.ws_real + os.sep)
+        is_dir = inside and os.path.isdir(real)
+        mask = self.mask.first(rel, is_dir)
         if not mask:
             return
-        allow = self.allow.first(rel, False)
+        allow = self.allow.first(rel, is_dir)
         if allow:
-            self.allowed[rel] = ("file", _label("allow", allow))
+            self.allowed[rel] = ("dir" if is_dir else "file", _label("allow", allow))
         else:
             self.pending.append((rel, e.path))
 
@@ -215,6 +224,12 @@ class _Scan:
             if rel in self.masked or self.covered(rel):
                 continue
             path = self.ws / rel
+            try:
+                st = os.lstat(path)
+            except OSError:
+                continue
+            if not stat.S_ISREG(st.st_mode):
+                continue
             try:
                 with open(path, "rb") as f:
                     first = f.read(4096).decode(errors="replace").splitlines()[:1]
