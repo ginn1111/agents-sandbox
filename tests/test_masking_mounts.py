@@ -272,3 +272,34 @@ def test_failed_mask_verification_removes_netguard_too(secret_ws, docker, capsys
     code, _, err = up(secret_ws, docker, capsys)
     assert code != 0 and err
     assert docker.containers == {}
+
+
+def test_up_catches_mid_up_symlink_swap_after_docker_run_and_cleans_up(workspace, docker, capsys, monkeypatch):
+    touch(workspace, "config/real.env")
+    os.symlink("config/real.env", workspace / ".env")
+    docker.has_image()
+    from agent_sandbox.runtime import Docker
+
+    real_run = Docker.run
+
+    def swap_during_session_run(self, *args, **kwargs):
+        res = real_run(self, *args, **kwargs)
+        if args and args[0] == "run" and "agent-sandbox=session" in args:
+            os.rename(workspace / "config", workspace / "config2")
+            os.symlink("config2", workspace / "config")
+        return res
+
+    monkeypatch.setattr(Docker, "run", swap_during_session_run)
+    code, _, err = up(workspace, docker, capsys)
+    assert code != 0 and "symlink" in err
+    assert docker.containers == {}
+
+
+def test_up_removes_leftover_exited_session_container_before_run(secret_ws, docker, capsys):
+    docker.has_image()
+    p = make_plan(secret_ws)
+    code, _, err = up(secret_ws, docker, capsys)
+    assert code == 0, err
+    rm_calls = [i for i, c in enumerate(docker.calls) if c == ["rm", "-f", p.container_name]]
+    run_calls = [i for i, c in enumerate(docker.calls) if c[0] == "run" and p.container_name in c]
+    assert rm_calls and run_calls and rm_calls[0] < run_calls[0]

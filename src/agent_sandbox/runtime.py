@@ -114,7 +114,9 @@ class Docker:
                 self.run("rm", "-f", plan.netguard_name, check=False)  # a leftover from a crashed run
                 self.run(*plan.netguard_run)
                 self._wait_netguard_ready(plan.netguard_name)
+            self.run("rm", "-f", plan.container_name, check=False)
             self.run(*plan.session_run)
+            check_originals_exist(plan)
             if any(e.status == "MASKED" for e in plan.entries):
                 r = self.run("inspect", "--format", "{{json .Mounts}}", plan.container_name)
                 verify_session_masks(plan, r.out)
