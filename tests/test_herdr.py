@@ -2,6 +2,7 @@
 import json
 import os
 import shutil
+import sys
 import subprocess
 from pathlib import Path
 
@@ -186,7 +187,7 @@ def test_session_runs_with_an_init_process_that_reaps_pane_processes(workspace):
 def _wrapper(tmp_path, name):
     """A wrapper symlink named like the agent, and a 'real' agent that just prints variables.
 
-    /tmp may be mounted noexec, so the wrapper runs through `sh` and the real agent is printenv.
+    The launcher runs via Python so this also works on a noexec filesystem.
     """
     bindir = tmp_path / "asb-bin"
     bindir.mkdir()
@@ -202,19 +203,33 @@ def _wrapper(tmp_path, name):
 def test_wrapper_runs_the_real_agent_with_the_agents_home(tmp_path, name):
     link, bindir, real = _wrapper(tmp_path, name)
     env = {"PATH": f"{bindir}:{real}:/usr/bin:/bin", "HOME": "/tmp", "SECRET": "x"}
-    r = subprocess.run(["sh", str(link), "HOME", "SECRET"], env=env, capture_output=True, text=True)
+    r = subprocess.run([sys.executable, "-c", """
+import runpy, sys
+main = runpy.run_path(sys.argv[1])['main']
+main.__globals__['SHIPPED'] = {sys.argv[2]: (sys.argv[3],)}
+main([sys.argv[1], 'HOME', 'SECRET'])
+""", str(link), name, str(real / name)], env=env, capture_output=True, text=True)
     assert r.returncode == 0, r.stderr
-    assert r.stdout.split() == [f"/agents/{name}", "x"]  # HOME changed, the rest passed through
+    assert r.stdout.split() == [f"/agents/{name}", "x"]
 
 
-def test_wrapper_does_not_call_itself_when_the_real_agent_is_missing(tmp_path):
-    link, bindir, real = _wrapper(tmp_path, "hermes")
-    (real / "hermes").unlink()
-    r = subprocess.run(["sh", str(link)], env={"PATH": f"{bindir}:/usr/bin:/bin"}, capture_output=True, text=True, timeout=10)
-    assert r.returncode == 127 and "hermes" in r.stderr
+def test_configured_launcher_preserves_the_selected_agents_home_and_literal_arguments(tmp_path):
+    config = tmp_path / "launch.json"
+    config.write_text(json.dumps({"custom": {
+        "command": ["hermes", "HOME", "DEMO_TOKEN"], "env": {"DEMO_TOKEN": "literal $x\nnext"},
+    }}))
+    cmd = [sys.executable, "-c", """
+import runpy, sys
+ns = runpy.run_path(sys.argv[1])
+main = ns['main']
+main.__globals__['CONFIG'] = sys.argv[2]
+main.__globals__['SHIPPED'] = {'hermes': ('/usr/bin/printenv',)}
+main(['asb-agent', 'custom'])
+""", str(AGENT_BIN), str(config)]
+    r = subprocess.run(cmd, env={"PATH": "/usr/bin:/bin", "HOME": "/tmp"}, capture_output=True, text=True)
+    assert r.returncode == 0, r.stderr
+    assert r.stdout == "/agents/custom\nliteral $x\nnext\n"
 
 
-def test_wrapper_script_is_executable_and_posix_sh():
+def test_wrapper_script_is_executable():
     assert AGENT_BIN.stat().st_mode & 0o111 == 0o111
-    assert AGENT_BIN.read_text().startswith("#!/bin/sh")
-    assert subprocess.run(["sh", "-n", str(AGENT_BIN)]).returncode == 0

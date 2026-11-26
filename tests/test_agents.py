@@ -46,9 +46,15 @@ def test_agent_volumes_are_never_shared_between_agents(workspace):
     assert len(set(sources)) == len(sources) and len(set(targets)) == len(targets)
     for a in p.agents:
         # an agent's home is its own volume, and no other agent's launch uses that home
-        assert f"HOME={a['home']}" in a["launch"]
+        assert a["launch"] == ["/opt/asb/asb-agent", a["name"]]
         others = [b for b in p.agents if b["name"] != a["name"]]
         assert all(b["home"] != a["home"] and b["volume"] != a["volume"] for b in others)
+
+
+def test_config_agent_named_mise_has_a_distinct_agent_volume(workspace):
+    (workspace / ".agent-sandbox.yaml").write_text("version: 1\nagents:\n  mise: {command: [mise]}\n")
+    mounts = {m["target"]: m["source"] for m in volume_mounts(make_plan(workspace).session_run)}
+    assert mounts["/agents/mise"] != mounts["/mise"]
 
 
 def test_agent_volume_names_do_not_depend_on_the_workspace(home):
@@ -82,30 +88,47 @@ def test_agent_launch_uses_the_configured_command_with_its_own_home(workspace):
     p = make_plan(workspace)
     by_name = {a["name"]: a for a in p.agents}
     assert set(by_name) == set(DEFAULT_AGENTS)
-    assert by_name["claude"]["launch"] == ["env", "HOME=/agents/claude", "claude"]
+    assert by_name["claude"]["launch"] == ["/opt/asb/asb-agent", "claude"]
     assert by_name["claude"]["command"] == ["claude"]
     assert by_name["claude"]["volume"] == "agent-sandbox-claude"
 
 
-def test_agent_env_applies_to_that_agent_only_and_host_env_is_not_inherited(workspace, monkeypatch):
-    monkeypatch.setenv("ANTHROPIC_API_KEY", "host-secret")
+def test_check_never_outputs_configured_agent_env_values(workspace, docker, capsys):
     (workspace / ".agent-sandbox.yaml").write_text(
-        "version: 1\nagents:\n  hermes: {command: [hermes, chat], env: {HERMES_YOLO: '1'}}\n"
+        "version: 1\nagents:\n  hermes: {command: [hermes, chat], env: {DEMO_TOKEN: fixture-value}}\n"
     )
-    p = make_plan(workspace)
-    by_name = {a["name"]: a for a in p.agents}
-    assert by_name["hermes"]["launch"] == ["env", "HOME=/agents/hermes", "HERMES_YOLO=1", "hermes", "chat"]
-    assert by_name["hermes"]["env"] == {"HERMES_YOLO": "1"}
-    assert by_name["claude"]["env"] == {}
-    assert "HERMES_YOLO" not in " ".join(by_name["claude"]["launch"])
-    assert "host-secret" not in json.dumps(p.to_dict())
+    for flags in ([], ["--json"]):
+        assert main(["check", str(workspace), *flags], docker=docker.command) == 0
+        assert "fixture-value" not in capsys.readouterr().out
+    assert docker.calls == []
+
+
+def test_up_transfers_agent_config_without_values_in_host_argv(workspace, docker, capsys, monkeypatch):
+    import subprocess
+
+    docker.has_image()
+    (workspace / ".agent-sandbox.yaml").write_text(
+        "version: 1\nagents:\n  hermes: {command: [hermes, chat], env: {DEMO_TOKEN: fixture-value}}\n"
+    )
+    real_run = subprocess.run
+    seen = []
+
+    def record(argv, *args, **kwargs):
+        if kwargs.get("input"):
+            seen.append(json.loads(kwargs["input"]))
+        return real_run(argv, *args, **kwargs)
+
+    monkeypatch.setattr(subprocess, "run", record)
+    assert main(["up", str(workspace)], docker=docker.command) == 0
+    assert "fixture-value" not in json.dumps(docker.calls)
+    assert [x["hermes"]["env"]["DEMO_TOKEN"] for x in seen] == ["fixture-value"]
 
 
 def test_a_config_defined_agent_gets_its_own_volume(workspace):
     (workspace / ".agent-sandbox.yaml").write_text("version: 1\nagents:\n  aider: {command: [aider]}\n")
     p = make_plan(workspace)
     by_source = {m["source"]: m["target"] for m in volume_mounts(p.session_run)}
-    assert by_source["agent-sandbox-aider"] == "/agents/aider"
+    assert by_source["agent-sandbox-agent.aider"] == "/agents/aider"
     # not baked into the image, so its home may not be writable: say so instead of failing mysteriously
     assert any("aider" in w and "image" in w for w in p.warnings)
     assert not any("claude" in w and "image" in w for w in p.warnings)
@@ -159,9 +182,9 @@ def test_a_failed_volume_create_fails_up_and_starts_nothing(workspace, docker, c
     docker.has_image()
     # the fake daemon rejects `volume create` when the name starts with this marker
     (workspace / ".agent-sandbox.yaml").write_text("version: 1\nagents:\n  boom: {command: [boom]}\n")
-    monkeypatch.setenv("FAKE_DOCKER_FAIL_VOLUME", "agent-sandbox-boom")
+    monkeypatch.setenv("FAKE_DOCKER_FAIL_VOLUME", "agent-sandbox-agent.boom")
     code, _, err = run(["up", str(workspace)], docker, capsys)
-    assert code != 0 and "agent-sandbox-boom" in err
+    assert code != 0 and "agent-sandbox-agent.boom" in err
     assert docker.containers == {}
 
 
@@ -196,6 +219,36 @@ def test_dockerfile_points_mise_at_the_volume_and_has_a_home_for_each_default_ag
     line = next(l for l in text.splitlines() if 'mkdir -p -m 0777 "/agents/$a"' in l)
     for name in DEFAULT_AGENTS:
         assert name in line
+
+
+def test_agent_image_bootstraps_from_verified_inputs():
+    text = dockerfile()
+    assert "https://mise.run" not in text
+    assert "astral.sh/uv/install.sh" not in text
+    assert "plannotator.ai/install.sh" not in text
+    assert "releases/latest/download" not in text
+    assert "sha256sum --check --strict" in (IMAGE_CONTEXT / "fetch-verified.sh").read_text()
+    assert "rev-parse HEAD" in text and "uv sync --locked" in text
+    assert "pnpm install --frozen-lockfile" in text
+
+
+def test_verified_fetch_rejects_wrong_digest_and_preserves_destination(tmp_path):
+    import subprocess
+
+    dest = tmp_path / "artifact"
+    dest.write_text("existing")
+    # Substitute only the download; execute the actual verification logic even under noexec /tmp.
+    args = ["sh", "-c", 'curl() { while [ "$1" != -o ]; do shift; done; printf fixture > "$2"; }; . "$0"',
+            str(IMAGE_CONTEXT / "fetch-verified.sh"), "https://example.invalid/artifact"]
+    r = subprocess.run([*args, "0" * 64, str(dest)], capture_output=True, text=True)
+    assert r.returncode != 0 and "FAILED" in r.stdout
+    assert dest.read_text() == "existing"
+
+    from hashlib import sha256
+
+    digest = sha256(b"fixture").hexdigest()
+    subprocess.run([*args, digest, str(dest)], capture_output=True, check=True)
+    assert dest.read_bytes() == b"fixture"
 
 
 def test_image_context_files_exist():

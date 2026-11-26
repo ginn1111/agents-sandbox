@@ -241,7 +241,7 @@ DOCKERFILE = (Path(__file__).parent.parent / "src" / "agent_sandbox" / "images" 
 
 
 def test_the_image_installs_hermes_with_its_web_server_packages_and_builds_the_ui():
-    assert "[web]" in DOCKERFILE
+    assert "--extra web" in DOCKERFILE
     assert "hermes_cli/web_dist" in DOCKERFILE and "scripts/build/web.mjs" in DOCKERFILE
     assert "index.html" in DOCKERFILE  # the build fails loudly when the UI is missing
 

@@ -110,8 +110,8 @@ def test_offline_starts_only_the_session_on_the_none_network(workspace, docker, 
     assert code == 0 and runs(docker) == [session]
     (c,) = docker.containers.values()
     assert c["args"][c["args"].index("--network") + 1] == "none"
-    # no Netguard readiness probe; the only exec calls are the herdr integration installs in the Session
-    assert not any(c[0] == "exec" and c[1] != session for c in docker.calls)
+    # No Netguard readiness probe; all exec calls target the Session.
+    assert all(session in c for c in docker.calls if c[0] == "exec")
     assert not any(c[0] == "exec" and "test" in c for c in docker.calls)
 
 

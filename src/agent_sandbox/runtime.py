@@ -1,6 +1,7 @@
 """Executes plans with the `docker` CLI. Argument lists only, never shell strings (ADR-0011)."""
 from __future__ import annotations
 
+import json
 import os
 import subprocess
 import time
@@ -32,15 +33,15 @@ class Docker:
         self.command = list(command) if command else ["docker"]
 
     def run(self, *args: str, check: bool = True, interactive: bool = False,
-            env: dict[str, str] | None = None) -> Result:
+            env: dict[str, str] | None = None, input_: str | None = None) -> Result:
         """`env` is added to the docker client's own environment, for `docker exec -e NAME` (a bare
         name takes its value from there), so a secret never appears on a command line."""
         argv = [*self.command, *args]
         client_env = {**os.environ, **env} if env else None
         try:
             if interactive:
-                return Result(subprocess.call(argv), "", "")
-            p = subprocess.run(argv, capture_output=True, text=True, env=client_env)
+                return Result(subprocess.call(argv, env=client_env), "", "")
+            p = subprocess.run(argv, capture_output=True, text=True, env=client_env, input=input_)
         except FileNotFoundError as e:
             raise DockerError(f"docker not found ({self.command[0]}); install Docker, Colima or Docker Desktop") from e
         if check and p.returncode != 0:
@@ -124,6 +125,12 @@ class Docker:
             if any(e.status == "MASKED" for e in plan.entries):
                 r = self.run("inspect", "--format", "{{json .Mounts}}", plan.container_name)
                 verify_session_masks(plan, r.out)
+            # Send values only over stdin into the Session tmpfs, never in argv or image layers.
+            launch_config = {a["name"]: {"command": a["command"], "env": a["env"]} for a in plan.agents}
+            loaded = self.run("exec", "-i", plan.container_name, "/opt/asb/asb-agent", "--configure",
+                              input_=json.dumps(launch_config), check=False)
+            if loaded.code != 0:
+                raise DockerError("could not configure agent launches; rebuild the Agent image with `asb build`")
         except (DockerError, MaskError):
             self.stop(plan)
             raise

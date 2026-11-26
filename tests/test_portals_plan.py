@@ -129,7 +129,8 @@ AGENT_IMAGE = Path(__file__).parent.parent / "src" / "agent_sandbox" / "images" 
 
 def test_the_agent_image_installs_plannotator_binary_only():
     docker = (AGENT_IMAGE / "Dockerfile").read_text()
-    assert "plannotator.ai/install.sh" in docker and "--minimal" in docker
+    assert "backnotprop/plannotator/releases/download/" in docker
+    assert "plannotator.ai/install.sh" not in docker
     assert "/opt/plannotator/.local/bin" in docker.split("ENV PATH=")[1].split("\n")[0]
 
 

@@ -416,6 +416,7 @@ def test_each_agent_starts_from_the_session_with_its_configured_command_env_and_
     assert r.stdout.strip() == f"{agent_home(a)} hello"
     r = dx(p.container_name, *by_name[b]["launch"])
     assert r.stdout.strip() == agent_home(b)  # the first agent's env did not leak to the second
+    assert dx(p.container_name, "stat", "-c", "%a", "/tmp/asb-agent-launch.json").stdout.strip() == "600"
 
 
 def test_login_persists_across_down_up_and_across_workspaces_but_never_between_agents(two_agents, workspace, home):

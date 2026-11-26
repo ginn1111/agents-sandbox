@@ -34,7 +34,9 @@ IMAGE_AGENTS = frozenset({"hermes", "omp", "claude", "codex"})
 
 
 def agent_volume(name: str) -> str:
-    return f"agent-sandbox-{name}"
+    # Retain shipped login volumes. A dot separates custom Agent volumes from
+    # legacy built-ins and the mise/Kanban namespaces (agent names cannot contain dots).
+    return f"agent-sandbox-{name}" if name in IMAGE_AGENTS else f"agent-sandbox-agent.{name}"
 
 
 def agent_home(name: str) -> str:
@@ -67,8 +69,7 @@ class SessionPlan:
     entries: list[Entry] = field(default_factory=list)
     mask_sources: dict[str, str] = field(default_factory=dict)  # kind (file|dir) -> empty read-only source
     errors: list[str] = field(default_factory=list)
-    # One entry per enabled agent: name, command, env, volume, home and `launch`,
-    # the argv to run inside the Session (`docker exec <session> <launch...>`).
+    # One entry per enabled agent. Only runtime uses env values; public plans list env names.
     agents: list[dict] = field(default_factory=list)
     # Named volumes the Session mounts; `up` creates them and `down` never removes them.
     volumes: list[str] = field(default_factory=list)
@@ -89,7 +90,10 @@ class SessionPlan:
     host_browser: dict | None = None
 
     def to_dict(self) -> dict:
-        return asdict(self)
+        data = asdict(self)
+        for agent in data["agents"]:
+            agent["env"] = sorted(agent["env"])
+        return data
 
 
 def session_name(workspace: Path) -> str:
@@ -123,8 +127,7 @@ def _volume_mount_arg(volume: str, target: str) -> str:
 
 def _agent_entry(name: str, command: list[str], env: dict[str, str]) -> dict:
     home = agent_home(name)
-    # `env` sets only what the config names: nothing is inherited from the host.
-    launch = ["env", f"HOME={home}", *(f"{k}={v}" for k, v in sorted(env.items())), *command]
+    launch = ["/opt/asb/asb-agent", name]
     return {
         "name": name, "command": list(command), "env": dict(env),
         "volume": agent_volume(name), "home": home, "launch": launch,
@@ -228,6 +231,8 @@ def plan(workspace: Path, config: Config, *, uid: int | None = None, gid: int | 
     ]
 
     warnings = list(found.warnings)
+    if any(a["env"] for a in agents):
+        warnings.append("Configured Agent environment values are not isolated from other processes in the same Session.")
     for a in agents:
         if a["name"] not in IMAGE_AGENTS:
             warnings.append(

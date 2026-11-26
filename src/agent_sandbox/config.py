@@ -202,12 +202,12 @@ def _validate_agent_env(env: Any, label: str, key: str) -> dict[str, str]:
     env = _expect_map(env, label, key)
     out = {}
     for k, v in env.items():
-        if not isinstance(k, str) or not ENV_NAME.match(k):
+        if not isinstance(k, str) or not ENV_NAME.fullmatch(k):
             raise ConfigError(f"{label}: {key} has an invalid variable name {k!r}")
         if k in RESERVED_ENV:
             raise ConfigError(f"{label}: {key}.{k} is set by the Session and cannot be overridden")
-        if not isinstance(v, str):
-            raise ConfigError(f"{label}: {key}.{k} must be a string")
+        if not isinstance(v, str) or "\0" in v:
+            raise ConfigError(f"{label}: {key}.{k} must be a string without NUL bytes")
         out[k] = v
     return out
 
@@ -216,7 +216,7 @@ def _validate_agents(agents: Any, label: str) -> dict[str, dict[str, Any]]:
     agents = _expect_map(agents, label, "agents")
     out = {}
     for name, spec in agents.items():
-        if not isinstance(name, str) or not AGENT_NAME.match(name):
+        if not isinstance(name, str) or not AGENT_NAME.fullmatch(name):
             raise ConfigError(
                 f"{label}: agents.{name}: agent names must match {AGENT_NAME.pattern} "
                 "(they name the Agent volume)"
@@ -226,6 +226,8 @@ def _validate_agents(agents: Any, label: str) -> dict[str, dict[str, Any]]:
         if "command" not in spec:
             raise ConfigError(f"{label}: agents.{name} is missing 'command'")
         entry: dict[str, Any] = {"command": _validate_str_list(spec["command"], label, f"agents.{name}.command")}
+        if not entry["command"] or any("\0" in arg for arg in entry["command"]):
+            raise ConfigError(f"{label}: agents.{name}.command must contain a program and no NUL bytes")
         if "env" in spec:
             entry["env"] = _validate_agent_env(spec["env"], label, f"agents.{name}.env")
         out[name] = entry
