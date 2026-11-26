@@ -33,3 +33,4 @@ portals:
 - The agent can read the generated credentials and reach the dashboard. Accepted: the dashboard only controls Hermes inside the same sandbox.
 - The Kanban board is for Hermes only. OMP is not wired to it; its status is watched through herdr (ADR-0009).
 - `kanban.db` lives in the Hermes Agent volume, which every Workspace shares (ADR-0006). To stop one sandbox's dispatcher starting workers for another Workspace's tasks, the CLI pins each Session to its own board by setting `HERMES_KANBAN_BOARD=<workspace slug>`. Boards persist across Sessions. Whether pinning also stops the dispatcher touching other boards in the same database must be tested.
+- Refined by ADR-0020: `HERMES_KANBAN_BOARD` is not relied on to isolate the dispatcher; each Workspace gets its own Kanban home volume instead of sharing `kanban.db` in the Hermes Agent volume.

@@ -28,6 +28,7 @@ SESSION_LABEL = "agent-sandbox.session"
 NAME_LABEL = "agent-sandbox.portal"
 OPEN_LABEL = "agent-sandbox.open"
 RULE_TAG = "asb-portal:"  # comment on the Netguard INPUT rule of one Portal
+GENERATED = "{generated}"  # an env value the CLI replaces with a per-Workspace random secret (ADR-0020)
 
 
 class PortalError(RuntimeError):
@@ -67,6 +68,7 @@ def plan_entries(session: str, portals: dict[str, dict[str, Any]], offline: bool
             "name": name, "port": spec["port"], "open": spec.get("open", "/"),
             "command": command, "env": dict(spec.get("env", {})),
             "started_by": "cli" if command else "agent",
+            "login": dict(spec["login"]) if spec.get("login") else None,
             "publisher": publisher_name(session, name), "network": network_name(session, name),
             "publish": f"{LOOPBACK}::{PUBLISH_PORT}",
         }
@@ -75,6 +77,10 @@ def plan_entries(session: str, portals: dict[str, dict[str, Any]], offline: bool
             errors.append(f"portals {ports[spec['port']]} and {name} use the same port {spec['port']}")
         ports[spec["port"]] = name
         if not command:
+            if GENERATED in entry["env"].values():
+                # the Session environment is fixed when `up` creates the Session, before any secret exists
+                errors.append(f"portal {name} uses {GENERATED} but has no `command`; generated values are "
+                              "only given to a service the CLI starts")
             for k, v in entry["env"].items():
                 if env.get(k, v) != v:
                     errors.append(f"portals set {k} to different values; Portals the agent starts share the Session environment")

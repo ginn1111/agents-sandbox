@@ -41,6 +41,7 @@ ours = (
     or (cmd == "ps" and fmt and "agent-sandbox.portal" in fmt[0])
     or (cmd == "inspect" and fmt and "NetworkSettings" in fmt[0])
     or (cmd == "exec" and "iptables" in args)
+    or (cmd == "exec" and "kanban" in args)
     or (cmd == "exec" and ("sh" in args or "bash" in args) and "-c" in args)
 )
 if not ours:
@@ -108,6 +109,9 @@ elif cmd == "port":
         c["host_port"] = s["port_counter"]
     bind = s.get("publish_on") or c["args"][c["args"].index("--publish") + 1].split(":")[0]
     print(f"{bind}:{c['host_port']}")
+elif "kanban" in args:  # `exec <session> hermes kanban boards create <slug> --name <name>`
+    if s.get("kanban_fails"):
+        finish(1, "hermes: kanban failed")
 elif "iptables" in args:
     if s.get("iptables_fails") and "-A" in args:
         finish(4, "iptables: Failed to apply the rule")
@@ -130,7 +134,9 @@ else:  # `exec [-d] [-e K=V ...] <session> sh -c <script> <$0> [<$@>...]`
     if "-d" in args:
         if s.get("process_dies"):
             finish(1, "exec: command not found")
-        p[rest[0]] = {"env": opt("-e"), "argv": rest[1:], "alive": True}
+        # a bare `-e NAME` takes its value from docker's own environment: that is how secrets stay off the command line
+        env = [e if "=" in e else f"{e}={os.environ.get(e, '')}" for e in opt("-e")]
+        p[rest[0]] = {"env": env, "argv": rest[1:], "alive": True}
     elif "/dev/tcp/" in script:
         finish(0 if s.get("portal_listening", True) else 1)
     elif "kill -0" in script:

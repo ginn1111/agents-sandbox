@@ -43,6 +43,24 @@ DEFAULT_PORTALS = {
         "env": {"PLANNOTATOR_REMOTE": "1", "PLANNOTATOR_PORT": "19432"},
         "open": "/",
     },
+    # ADR-0010, ADR-0020. The dashboard listens on 0.0.0.0, so Hermes requires a login: the CLI
+    # generates it once per Workspace. HERMES_WEB_DIST: the UI is built into the image, because
+    # the read-only root filesystem leaves Hermes nowhere to build it at start.
+    "hermes-dashboard": {
+        "port": 9119,
+        "command": ["hermes", "dashboard", "--host", "0.0.0.0", "--port", "9119", "--no-open"],
+        "env": {
+            "HERMES_DASHBOARD_BASIC_AUTH_USERNAME": "{generated}",
+            "HERMES_DASHBOARD_BASIC_AUTH_PASSWORD": "{generated}",
+            "HERMES_DASHBOARD_BASIC_AUTH_SECRET": "{generated}",
+            "HERMES_WEB_DIST": "/opt/hermes/src/hermes_cli/web_dist",
+        },
+        "login": {
+            "username": "HERMES_DASHBOARD_BASIC_AUTH_USERNAME",
+            "password": "HERMES_DASHBOARD_BASIC_AUTH_PASSWORD",
+        },
+        "open": "/",
+    },
 }
 # Agent names become Docker volume names and directory names, so keep them plain.
 AGENT_NAME = re.compile(r"^[a-z][a-z0-9_-]{0,31}$")
@@ -205,6 +223,22 @@ def _validate_agents(agents: Any, label: str) -> dict[str, dict[str, Any]]:
     return out
 
 
+def _validate_login(login: Any, spec: dict, label: str, name: str, source: str) -> None:
+    """`login` names the env variables `portal start` shows as the user name and password."""
+    key = f"portals.{name}.login"
+    login = _expect_map(login, label, key)
+    _reject_unknown(login, {"username", "password"}, label, f"{key}.")
+    env = spec.get("env", {})
+    for k in ("username", "password"):
+        var = login.get(k)
+        if not isinstance(var, str) or var not in env:
+            raise ConfigError(f"{label}: {key}.{k} must name a variable in portals.{name}.env")
+        if source == "project" and env[var] != "{generated}":
+            raise ConfigError(
+                f"{label}: {key}: {var} must be {{generated}} in project config; "
+                "Portal logins are not set from the project (ADR-0005, ADR-0010)")
+
+
 def _validate_portals(portals: Any, label: str, source: str) -> dict[str, dict[str, Any]]:
     portals = _expect_map(portals, label, "portals")
     out = {}
@@ -212,7 +246,7 @@ def _validate_portals(portals: Any, label: str, source: str) -> dict[str, dict[s
         if not isinstance(name, str) or not PORTAL_NAME.match(name):
             raise ConfigError(f"{label}: portals.{name}: Portal names must match {PORTAL_NAME.pattern}")
         spec = _expect_map(spec, label, f"portals.{name}")
-        _reject_unknown(spec, {"port", "command", "env", "open", "secrets"}, label, f"portals.{name}.")
+        _reject_unknown(spec, {"port", "command", "env", "open", "secrets", "login"}, label, f"portals.{name}.")
         if "secrets" in spec and source == "project":
             raise ConfigError(
                 f"{label}: portals.{name}.secrets cannot be set in project config (ADR-0005, ADR-0010)"
@@ -224,6 +258,8 @@ def _validate_portals(portals: Any, label: str, source: str) -> dict[str, dict[s
             _validate_str_list(spec["command"], label, f"portals.{name}.command")
         if "env" in spec:
             _validate_agent_env(spec["env"], label, f"portals.{name}.env")
+        if "login" in spec:
+            _validate_login(spec["login"], spec, label, name, source)
         if "open" in spec and (not isinstance(spec["open"], str) or not spec["open"].startswith("/")):
             raise ConfigError(f"{label}: portals.{name}.open must be a URL path starting with '/'")
         out[name] = dict(spec)

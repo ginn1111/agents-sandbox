@@ -18,6 +18,7 @@ from .netguard import IMAGE as NETGUARD_IMAGE
 from .netguard import RULES_ENV, rules as netguard_rules
 from .discovery import Entry, discover
 from .portals import plan_entries as portal_entries
+from .kanban import plan_entry as kanban_entry
 
 IMAGE = "agent-sandbox-agent:latest"
 FALLBACK_UID = 1000
@@ -81,6 +82,8 @@ class SessionPlan:
     # One entry per configured Portal (ADR-0010). Nothing is published by `up`; `asb portal start`
     # publishes one on 127.0.0.1 (ADR-0013, ADR-0018).
     portals: list[dict] = field(default_factory=list)
+    # This Workspace's Hermes Kanban board, its own volume and env (ADR-0020).
+    kanban: dict = field(default_factory=dict)
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -188,11 +191,13 @@ def plan(workspace: Path, config: Config, *, uid: int | None = None, gid: int | 
     agents = [_agent_entry(n, config.agents[n], config.agent_env.get(n, {})) for n in sorted(config.agents)]
     portal_list, portal_env, portal_errors = portal_entries(name, config.portals, config.offline)
     errors += portal_errors
-    volumes = sorted({a["volume"] for a in agents} | {MISE_VOLUME})
+    kb = kanban_entry(name, workspace)
+    volumes = sorted({a["volume"] for a in agents} | {MISE_VOLUME, kb["volume"]})
     volume_mounts: list[str] = []
     for a in agents:
         volume_mounts += ["--mount", _volume_mount_arg(a["volume"], a["home"])]
     volume_mounts += ["--mount", _volume_mount_arg(MISE_VOLUME, MISE_DIR)]
+    volume_mounts += ["--mount", _volume_mount_arg(kb["volume"], kb["home"])]
 
     args = [
         "run", "-d",
@@ -211,7 +216,7 @@ def plan(workspace: Path, config: Config, *, uid: int | None = None, gid: int | 
         "--pids-limit", str(config.resources["pids_limit"]),
         "--network", "none" if ng_name is None else f"container:{ng_name}",
         "--env", "HOME=/tmp",
-        *(a for k, v in sorted(portal_env.items()) for a in ("--env", f"{k}={v}")),
+        *(a for k, v in sorted({**portal_env, **kb["env"]}.items()) for a in ("--env", f"{k}={v}")),
         "--mount", _mount_arg(workspace, "/workspace"),
         *_mask_mounts(found.entries, sources),
         *volume_mounts,
@@ -253,4 +258,5 @@ def plan(workspace: Path, config: Config, *, uid: int | None = None, gid: int | 
         volumes=volumes,
         host_services=_hs.plan_entries(config.host_services, ng_name),
         portals=portal_list,
+        kanban=kb,
     )

@@ -144,7 +144,7 @@ Result: Ready
 - Portal activation belongs to the current Session. `asb down` unpublishes its Portals and releases their host ports. On the next `asb up`, every Portal starts off and must be started explicitly again. Configuration and `{generated}` logins persist across Sessions; the CLI stores generated secrets per Workspace, outside the Workspace.
 - Built-in entries:
   - **plannotator**, using `PLANNOTATOR_REMOTE=1` and port 19432;
-  - **hermes-dashboard**, using `--host 0.0.0.0` with generated basic-auth credentials. `HERMES_KANBAN_BOARD` is set to the Workspace slug. Its Kanban board is for Hermes only.
+  - **hermes-dashboard**, using `--host 0.0.0.0` with generated basic-auth credentials (`{generated}`, created once per Workspace, kept in `$XDG_STATE_HOME/agent-sandbox/portal-secrets/`, printed by `portal start`, never by `status`, `ls` or `check`). Its Kanban board is for Hermes only: each Workspace has its own Kanban home volume `agent-sandbox-kanban-<slug>` (`HERMES_KANBAN_HOME=/kanban`) and `HERMES_KANBAN_BOARD` is set to the Workspace slug (ADR-0020).
 
 ## 9. Configuration (ADR-0005)
 

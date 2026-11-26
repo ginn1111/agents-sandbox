@@ -69,8 +69,27 @@ ENV UV_PYTHON_INSTALL_DIR=/opt/uv-python
 RUN curl -fsSL https://astral.sh/uv/install.sh | UV_INSTALL_DIR=/usr/local/bin UV_NO_MODIFY_PATH=1 sh \
  && git clone --depth 1 https://github.com/NousResearch/hermes-agent.git /opt/hermes/src \
  && uv venv /opt/hermes/venv \
- && uv pip install --python /opt/hermes/venv/bin/python -e /opt/hermes/src \
+ && uv pip install --python /opt/hermes/venv/bin/python -e "/opt/hermes/src[web]" \
  && chmod -R a+rX /opt/hermes /opt/uv-python
+
+# ---- Hermes dashboard (Portal, ADR-0010, ADR-0020). Hermes would build its web UI on first start,
+# but the Session's root filesystem is read-only, so build it here and point HERMES_WEB_DIST at it
+# (the built-in Portal entry sets that). pnpm is only a build tool: it and the node_modules it
+# creates are removed again. The index.html check makes a failed UI build fail the image build.
+# UNVERIFIED: no Docker daemon when written; the build steps follow upstream's
+# scripts/build/web.mjs. See docs/spikes/hermes-dashboard.md.
+RUN cd /opt/hermes/src \
+ && PATH="/opt/node/bin:$PATH" npm install -g --prefix /tmp/pnpm-tool --no-fund --no-audit pnpm \
+ && PATH="/opt/node/bin:/tmp/pnpm-tool/bin:$PATH" pnpm install --frozen-lockfile --filter web... \
+ && PATH="/opt/node/bin:/tmp/pnpm-tool/bin:$PATH" node scripts/build/web.mjs \
+      --source /opt/hermes/src --icons /opt/hermes/src --out /opt/hermes/src/hermes_cli/web_dist \
+ && test -f /opt/hermes/src/hermes_cli/web_dist/index.html \
+ && rm -rf /tmp/pnpm-tool /root/.npm /root/.local/share/pnpm /root/.cache /opt/hermes/src/node_modules /opt/hermes/src/web/node_modules \
+ && chmod -R a+rX /opt/hermes
+
+# ---- This Workspace's Hermes Kanban home (ADR-0020): an empty world-writable directory that Docker
+# copies into a new per-Workspace volume mounted here, so any --user can write the board database.
+RUN mkdir -p -m 0777 /kanban
 
 # ---- Plannotator (Portal, ADR-0010): binary only (`--minimal`: no per-agent integrations written
 # into any HOME). It lives in the image, not in an Agent volume. Without PLANNOTATOR_REMOTE it
