@@ -5,6 +5,7 @@ import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 
+from .masks import MaskError, check_originals_exist, prepare_mask_sources, verify_session_masks
 from .plan import IMAGE, SessionPlan
 
 
@@ -61,13 +62,20 @@ class Docker:
         return bool(self.running_sessions(name))
 
     def start(self, plan: SessionPlan) -> None:
-        """Start the Session. Fails closed: a partial start is removed."""
+        """Start the Session. Fails closed: a partial start or a missing mask is removed."""
+        if plan.errors:
+            raise MaskError("; ".join(plan.errors))
         self.require_daemon()
         if not self.has_image(plan.image):
             raise DockerError(f"image {plan.image} not found; run `asb build` first")
+        check_originals_exist(plan)
+        prepare_mask_sources(plan)
         try:
             self.run(*plan.session_run)
-        except DockerError:
+            if any(e.status == "MASKED" for e in plan.entries):
+                r = self.run("inspect", "--format", "{{json .Mounts}}", plan.container_name)
+                verify_session_masks(plan, r.out)
+        except (DockerError, MaskError):
             self.run("rm", "-f", plan.container_name, check=False)
             raise
 

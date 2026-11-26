@@ -14,6 +14,7 @@ def isolated_user_env(tmp_path, monkeypatch):
     home.mkdir(parents=True)
     monkeypatch.setenv("HOME", str(home))
     monkeypatch.setenv("XDG_CONFIG_HOME", str(home / ".config"))
+    monkeypatch.delenv("XDG_STATE_HOME", raising=False)
     return home
 
 
@@ -53,6 +54,12 @@ class FakeDocker:
     def has_image(self, name="agent-sandbox-agent:latest"):
         s = self._state()
         s["images"].append(name)
+        self._write(s)
+
+    def set(self, **knobs):
+        """Failure injection for the fake: fail_run, drop_mounts, writable_mounts, wrong_source_mounts."""
+        s = self._state()
+        s.update(knobs)
         self._write(s)
 
     def stop_daemon(self):

@@ -71,9 +71,9 @@ def test_session_has_no_network_until_netguard_exists(workspace):
     assert any("Netguard" in w for w in p.warnings)
 
 
-def test_masking_gap_is_disclosed(workspace):
+def test_plan_no_longer_claims_masking_is_missing(workspace):
     p = make_plan(workspace)
-    assert any("not masked" in w.lower() for w in p.warnings)
+    assert not any("not masked yet" in w.lower() for w in p.warnings)
 
 
 def test_names_are_stable_and_distinct_per_workspace(home):

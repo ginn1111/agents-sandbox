@@ -40,10 +40,30 @@ elif cmd == "image" and args[1] == "inspect":
 elif cmd == "build":
     state["images"].append(opt("-t")[0])
 elif cmd == "run":
+    if state.get("fail_run"):
+        print("docker: Error response from daemon: invalid mount config", file=sys.stderr)
+        save()
+        sys.exit(125)
     name = opt("--name")[0]
     labels = dict(l.split("=", 1) for l in opt("--label"))
     state["containers"][name] = {"labels": labels, "args": args}
     print("deadbeef")
+elif cmd == "inspect":
+    import csv
+    name = args[-1]
+    if name not in state["containers"]:
+        save()
+        sys.exit(1)
+    mounts = []
+    for v in [args_[i + 1] for args_ in [state["containers"][name]["args"]] for i, a in enumerate(args_) if a == "--mount"]:
+        f = dict(x.partition("=")[::2] for x in next(csv.reader([v])))
+        dest = f["target"]
+        if dest in state.get("drop_mounts", []):
+            continue
+        src = "/wrong/source" if dest in state.get("wrong_source_mounts", []) else f["source"]
+        rw = "readonly" not in f or dest in state.get("writable_mounts", [])
+        mounts.append({"Type": f["type"], "Source": src, "Destination": dest, "RW": rw})
+    print(json.dumps(mounts))
 elif cmd == "rm":
     state["containers"].pop(args[-1], None)
 elif cmd == "ps":
