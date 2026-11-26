@@ -9,13 +9,16 @@ from pathlib import Path
 from .config import ConfigError, load_config
 from .netguard import IMAGE as NETGUARD_IMAGE
 from .masks import MaskError
+from . import portal_cli, portals
 from .plan import IMAGE, plan
+from .portal_runtime import teardown_all
 from .render import render
 from .runtime import Docker, DockerError
 from .workspace import WorkspaceError, resolve_workspace
 
 IMAGE_CONTEXT = Path(__file__).parent / "images" / "agent"
 NETGUARD_CONTEXT = Path(__file__).parent / "images" / "netguard"
+PORTAL_CONTEXT = Path(__file__).parent / "images" / "portal"
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -31,6 +34,7 @@ def _parser() -> argparse.ArgumentParser:
             s.add_argument("--json", action="store_true", help="emit the plan as JSON")
         if name in ("up", "attach", "check"):
             s.add_argument("--offline", action="store_true", help="no network at all")
+    portal_cli.add_parser(sub)
     sub.add_parser("ls", help="list running Sessions")
     sub.add_parser("doctor", help="check the local environment")
     sub.add_parser("build", help="build the agent image")
@@ -53,6 +57,7 @@ def _ensure_up(docker: Docker, p, out) -> bool:
                 "so the Session has no network; run `asb down` and then `asb up`")
         print(f"Session already running: {p.container_name} ({p.workspace})", file=out)
         return False
+    teardown_all(docker, p)  # publishers and Portal networks a crashed Session left behind
     docker.start(p)
     print(f"Session started: {p.container_name} ({p.workspace})", file=out)
     return True
@@ -72,6 +77,9 @@ def _doctor(docker: Docker) -> int:
             has_image = docker.has_image(image)
             print(f"{'ok  ' if has_image else 'FAIL'} {label} image {image}" + ("" if has_image else " missing; run `asb build`"))
             ok &= has_image
+        # Only Portals need this one, so a missing image is a warning, not a failure.
+        has_portal = docker.has_image(portals.IMAGE)
+        print(f"{'ok  ' if has_portal else 'warn'} Portal image {portals.IMAGE}" + ("" if has_portal else " missing; run `asb build` to use Portals"))
     except DockerError as e:
         print(f"FAIL Docker: {e}")
         ok = False
@@ -87,7 +95,9 @@ def main(argv: list[str] | None = None, *, docker: list[str] | None = None) -> i
             print(json.dumps(p.to_dict(), indent=2) if args.json else render(p))
             return 0 if p.result == "Ready" else 1
         elif args.command == "up":
-            _ensure_up(d, _plan_for(args), sys.stdout)
+            p = _plan_for(args)
+            _ensure_up(d, p, sys.stdout)
+            portal_cli.print_available(p, sys.stdout)
         elif args.command == "attach":
             p = _plan_for(args)
             _ensure_up(d, p, sys.stdout)
@@ -95,6 +105,7 @@ def main(argv: list[str] | None = None, *, docker: list[str] | None = None) -> i
         elif args.command == "down":
             p = _plan_for(args)
             was_running = d.is_running(p.container_name)
+            teardown_all(d, p)  # unpublish every Portal and release its host port first
             d.stop(p)  # the Session, then its Netguard (also removes a leftover Netguard)
             print(f"Session removed: {p.container_name}" if was_running else f"Session not running: {p.container_name}")
         elif args.command == "ls":
@@ -103,6 +114,9 @@ def main(argv: list[str] | None = None, *, docker: list[str] | None = None) -> i
                 print("No running Sessions")
             for name, ws in rows:
                 print(f"{name}\t{ws}")
+                portal_cli.print_active(d, name, sys.stdout)
+        elif args.command == "portal":
+            return portal_cli.run_portal(args, d, _plan_for(args), sys.stdout)
         elif args.command == "doctor":
             return _doctor(d)
         elif args.command == "build":
@@ -110,7 +124,9 @@ def main(argv: list[str] | None = None, *, docker: list[str] | None = None) -> i
             print(f"Built {IMAGE}")
             d.build(NETGUARD_CONTEXT, NETGUARD_IMAGE)
             print(f"Built {NETGUARD_IMAGE}")
-    except (WorkspaceError, ConfigError, DockerError, MaskError) as e:
+            d.build(PORTAL_CONTEXT, portals.IMAGE)
+            print(f"Built {portals.IMAGE}")
+    except (WorkspaceError, ConfigError, DockerError, MaskError, portals.PortalError) as e:
         print(f"error: {e}", file=sys.stderr)
         return 1
     return 0

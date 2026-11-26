@@ -13,7 +13,7 @@
 #   /agents/<name>   one Agent volume per agent, mounted as that agent's HOME (ADR-0006).
 #
 # Nothing from the host (agent config, credentials, shell settings) is copied in.
-# herdr, Plannotator, chrome-devtools-mcp and the shell prompt arrive in later tickets.
+# herdr, chrome-devtools-mcp and the shell prompt arrive in later tickets.
 FROM debian:bookworm-slim
 
 ENV DEBIAN_FRONTEND=noninteractive
@@ -71,6 +71,19 @@ RUN curl -fsSL https://astral.sh/uv/install.sh | UV_INSTALL_DIR=/usr/local/bin U
  && uv pip install --python /opt/hermes/venv/bin/python -e /opt/hermes/src \
  && chmod -R a+rX /opt/hermes /opt/uv-python
 
+# ---- Plannotator (Portal, ADR-0010): binary only (`--minimal`: no per-agent integrations written
+# into any HOME). It lives in the image, not in an Agent volume. Without PLANNOTATOR_REMOTE it
+# would try to open a browser; the built-in Portal entry sets PLANNOTATOR_REMOTE=1 and the port,
+# so it listens on 0.0.0.0:19432 inside the Session and `asb portal start plannotator` publishes it.
+# Claude Code's plan hook is system-wide managed settings (read-only, image layer), so it needs
+# nothing from the host or from the Claude volume. UNVERIFIED: see docs/spikes/portals.md.
+RUN mkdir -p /opt/plannotator \
+ && curl -fsSL https://plannotator.ai/install.sh | HOME=/opt/plannotator bash -s -- --minimal \
+ && chmod -R a+rX /opt/plannotator \
+ && /opt/plannotator/.local/bin/plannotator --version
+COPY claude-managed-settings.json /etc/claude-code/managed-settings.json
+RUN chmod 0644 /etc/claude-code/managed-settings.json
+
 # ---- Agent homes: one empty world-writable directory per shipped agent. Docker copies it into a
 # new, empty Agent volume, which is what lets an arbitrary --user write to a fresh volume.
 # Agents added only through config get no pre-created home; `asb check` warns about that.
@@ -78,7 +91,7 @@ RUN for a in hermes omp claude codex; do mkdir -p -m 0777 "/agents/$a"; done
 
 # mise shims first: a project's pinned node/python/go win for everything run in the Workspace.
 # The agents themselves are launched from bin-wrapped, which is fixed to the private Node.
-ENV PATH=/mise/shims:/opt/agents/bin-wrapped:/opt/agents/bin:/opt/hermes/venv/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
+ENV PATH=/mise/shims:/opt/plannotator/.local/bin:/opt/agents/bin-wrapped:/opt/agents/bin:/opt/hermes/venv/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
     HOME=/tmp
 
 USER 1000:1000

@@ -27,6 +27,12 @@ def render(p: SessionPlan) -> str:
             lines.append(f"  {a['name']:<8} {' '.join(a['command'])}  (home {a['home']}, volume {a['volume']})")
         lines.append("Volumes:        " + ", ".join(p.volumes) + " (kept by `asb down`; `docker volume rm` to log out)")
         lines.append("")
+    if p.portals:
+        lines.append("Portals:  (none started by `up`; `asb portal start <name>` publishes one on 127.0.0.1 only)")
+        for e in p.portals:
+            how = "asb runs: " + " ".join(e["command"]) if e["command"] else "the agent starts it"
+            lines.append(f"  {e['name']:<12} port {e['port']} → 127.0.0.1:<random>{e['open']}  ({how})")
+        lines.append("")
     for key, value in p.project_rules:
         note = " (weakens masking)" if key in WEAKENING else ""
         lines.append(f"Project config: {key} {value}{note}")
