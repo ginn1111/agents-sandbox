@@ -8,7 +8,8 @@ ADR-0012 fixes what `asb update` does. This records how, where ADR-0012 left it 
 - **Install integrations in a throwaway container with the Session's hardening**: chosen. Same restrictions as a Session minus the Workspace and Netguard; it can write only the Agent volume it mounts, which is where the integration files go.
 - **Track the previous build with a state file**: rejected. A tag lives with the image, survives a lost file, and `docker image ls` shows it.
 - **Move `latest` after each image builds**: rejected. A Netguard build failure would leave a new agent image next to an old Netguard.
-- **Keep running `asb update` in the old process after the CLI upgrade**: rejected. It would build the old Dockerfiles, so "latest" CLI changes to the images would not apply until a second `update`.
+- **Look up the upgraded CLI on `PATH`**: rejected. The first match may be a different installation. Use the upgraded package's executable inside the tool environment reported by the installer that performed the upgrade.
+- **Always keep running `asb update` in the old process after the CLI upgrade**: rejected. It would build the old Dockerfiles. Continue with the current CLI only when the upgrade fails, the CLI is unmanaged, or the upgraded executable cannot be located; report the reason.
 
 ## Consequences
 

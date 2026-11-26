@@ -161,7 +161,9 @@ def test_project_config_exceptions_are_documented_and_true(tmp_path):
     with pytest.raises(ConfigError, match="unknown key"):
         load_config(ws, global_path=tmp_path / "none.yaml")
     low = norm(README).lower()
-    assert "project config cannot" in low and "host browser" in low
+    assert "project config cannot" in low and "network.host_browser" in low
+    assert "portals.<name>.secrets" not in low  # the rejected key is not a config feature
+    assert "even if the project entry omits `login`" in low
 
 
 def test_default_patterns_in_the_readme_are_the_ones_in_the_code():

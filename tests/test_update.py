@@ -93,15 +93,6 @@ def fresh(udocker):
     return udocker
 
 
-REAL_FIND_CLI = update.find_cli
-
-
-@pytest.fixture(autouse=True)
-def no_handoff(monkeypatch):
-    """By default there is no installed `asb` to hand over to, so every step runs in this process."""
-    monkeypatch.setattr(update, "find_cli", lambda: None)
-
-
 @pytest.fixture
 def day(monkeypatch):
     """Set the date `update` stamps builds with."""
@@ -207,14 +198,43 @@ def test_failed_cli_upgrade_is_reported_and_the_other_steps_still_run(udocker, d
     assert len(udocker.builds()) == 2
 
 
-def test_after_a_cli_upgrade_the_new_asb_runs_the_remaining_steps(udocker, day, capsys, monkeypatch):
-    """The images are built from the Dockerfiles inside the CLI, so the upgraded CLI must build them."""
-    monkeypatch.setattr(update, "find_cli", lambda: "/home/u/.local/bin/asb")
-    r = Runner(udocker)
+@pytest.mark.parametrize(("installer", "directory_query", "entrypoint"), [
+    ("uv", ["uv", "tool", "dir"], "asb"),
+    ("pipx", ["pipx", "environment", "--value", "PIPX_LOCAL_VENVS"], "agent-sandbox"),
+])
+def test_handoff_uses_the_upgraded_installation_even_with_a_shadowing_path(
+    udocker, capsys, monkeypatch, tmp_path, installer, directory_query, entrypoint,
+):
+    tool_dir = tmp_path / "custom tool store"
+    executable = tool_dir / "agent-sandbox" / "bin" / entrypoint
+    shadow = tmp_path / "earlier-on-path" / "asb"
+    for path in (executable, shadow):
+        path.parent.mkdir(parents=True)
+        path.symlink_to(sys.executable)
+    monkeypatch.setenv("PATH", str(shadow.parent))
+
+    class Managed(Runner):
+        def __call__(self, argv, passthrough=False):
+            if argv == directory_query:
+                return Result(0, f"{tool_dir}\n", "")
+            return super().__call__(argv, passthrough)
+
+    r = Managed(udocker, installed=installer)
     code, _, _ = run(["update"], udocker, capsys, r)
     assert code == 0
-    assert r.calls[-1] == ["/home/u/.local/bin/asb", "update", "--after-cli"]
-    assert udocker.builds() == []  # this (old) process built nothing
+    assert r.calls[-1] == [str(executable), "update", "--after-cli"]
+    assert udocker.calls == []  # the old process made no Docker calls
+
+
+def test_handoff_lookup_failure_warns_and_continues_without_using_path(udocker, day, capsys, monkeypatch, tmp_path):
+    shadow = tmp_path / "asb"
+    shadow.symlink_to(sys.executable)
+    monkeypatch.setenv("PATH", str(tmp_path))
+    r = Runner(udocker)
+    code, _, err = run(["update"], udocker, capsys, r)
+    assert code == 0 and "could not locate" in err and "current CLI" in err
+    assert not any("--after-cli" in cmd for cmd in r.calls)
+    assert len(udocker.builds()) == 2
 
 
 def test_after_cli_runs_image_and_integrations_without_upgrading_again(udocker, day, capsys):
@@ -226,7 +246,7 @@ def test_after_cli_runs_image_and_integrations_without_upgrading_again(udocker, 
 
 
 def test_the_handoff_exit_code_is_the_update_exit_code(udocker, day, capsys, monkeypatch):
-    monkeypatch.setattr(update, "find_cli", lambda: "/x/asb")
+    monkeypatch.setattr(update, "find_cli", lambda tool, runner: "/x/asb")
 
     class Failing(Runner):
         def __call__(self, argv, passthrough=False):
@@ -519,18 +539,6 @@ def test_a_failed_promotion_puts_latest_back_and_removes_the_new_builds(udocker,
     assert code == 1 and "error" in err
     assert udocker.id_of(f"{AGENT}:latest") == old_agent and udocker.id_of(f"{NETGUARD}:latest") == old_ng
     assert udocker.tags(AGENT) == ["latest"] and udocker.tags(NETGUARD) == ["latest"]
-
-
-# -- the host programs
-
-def test_find_cli_prefers_asb_then_agent_sandbox(monkeypatch):
-    found = {"asb": "/bin/asb", "agent-sandbox": "/bin/agent-sandbox"}
-    monkeypatch.setattr(update.shutil, "which", lambda n: found.get(n))
-    assert REAL_FIND_CLI() == "/bin/asb"
-    del found["asb"]
-    assert REAL_FIND_CLI() == "/bin/agent-sandbox"
-    del found["agent-sandbox"]
-    assert REAL_FIND_CLI() is None
 
 
 def test_the_untagged_build_adopted_as_previous_is_removed_by_the_next_update(udocker, day, capsys):

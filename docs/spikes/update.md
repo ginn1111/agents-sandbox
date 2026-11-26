@@ -26,6 +26,6 @@
 
 ## 4. Hand-off to the upgraded CLI
 
-- Assumption: after `uv tool upgrade` / `pipx upgrade`, `asb` on PATH is the new version, so `asb update --after-cli` builds the new Dockerfiles. If PATH still resolves to the old one, the images are built from the old Dockerfiles; a warning says so.
-- Check: run `asb update` after bumping the package version; compare the Dockerfile that was built.
-- Result: _not run_.
+- Handoff uses the upgraded package's executable under the directory reported by `uv tool dir` or `pipx environment --value PIPX_LOCAL_VENVS`. It does not look up `asb` on `PATH`. If the executable cannot be located, it warns and continues with the current CLI.
+- Seam 1 checks: `tests/test_update.py` covers both installers, an unrelated executable earlier on `PATH`, and lookup failure. End-to-end check: run `asb update` after bumping the package version; compare the Dockerfile that was built.
+- End-to-end result: _not run_.

@@ -1,8 +1,8 @@
 """`asb update` and `asb update --rollback` (ADR-0012).
 
-Three steps, in order: upgrade the CLI, rebuild the agent and Netguard images with no cache at the
-latest versions, re-install the herdr integrations in the Agent volumes. Running Sessions are never
-stopped; they are listed with how to restart them.
+Three steps, in order: try to upgrade the CLI, rebuild the agent and Netguard images without cache
+and with fresh base image pulls, re-install the herdr integrations in existing Agent volumes that
+support them. Running Sessions are never stopped; they are listed with how to restart them.
 
 Image tags per repository (`agent-sandbox-agent`, `agent-sandbox-netguard`):
 
@@ -69,15 +69,22 @@ def default_runner(argv: list[str], passthrough: bool = False) -> Result:
     return Result(p.returncode, p.stdout, p.stderr)
 
 
-def find_cli() -> str | None:
-    """The installed `asb`, which after a CLI upgrade is the new version."""
-    return shutil.which("asb") or shutil.which("agent-sandbox")
+def find_cli(tool: str, runner: Runner) -> str | None:
+    """Find the upgraded entry point inside the selected installer's environment, not on PATH."""
+    query = ["uv", "tool", "dir"] if tool == "uv" else ["pipx", "environment", "--value", "PIPX_LOCAL_VENVS"]
+    result = runner(query)
+    root = Path(result.out.strip())
+    if result.code != 0 or not root.is_absolute():
+        return None
+    bin_dir = root / PACKAGE / "bin"
+    # Do not use the installer's shared bin directory: another install may own those links.
+    return shutil.which(str(bin_dir / "asb")) or shutil.which(str(bin_dir / PACKAGE))
 
 
 # -- the command line
 
 def add_parser(sub) -> None:
-    s = sub.add_parser("update", help="upgrade the CLI, rebuild the images at latest versions, re-install herdr integrations")
+    s = sub.add_parser("update", help="try to upgrade the CLI, rebuild the agent and Netguard images, re-install herdr integrations")
     s.add_argument("--only", choices=STEPS, help="run one step only")
     s.add_argument("--rollback", action="store_true", help="point `latest` back at the previous build")
     s.add_argument("--after-cli", action="store_true", help=argparse.SUPPRESS)  # the upgraded asb runs the rest
@@ -102,9 +109,8 @@ def _installer(runner: Runner) -> str | None:
     return None
 
 
-def upgrade_cli(runner: Runner, out: TextIO, err: TextIO) -> str:
+def upgrade_cli(tool: str | None, runner: Runner, out: TextIO, err: TextIO) -> str:
     """Upgrade the CLI itself. Returns "upgraded", "unmanaged" or "failed"."""
-    tool = _installer(runner)
     if tool is None:
         print(f"warning: {PACKAGE} was not installed with `uv tool install` or `pipx install`, so it was not "
               "upgraded; upgrade it with the tool you installed it with", file=err)
@@ -160,7 +166,7 @@ def _quiet_rmi(docker: Docker, ref: str) -> None:
 
 
 def update_images(docker: Docker, out: TextIO, err: TextIO) -> None:
-    """Build every image without cache, then move `latest`. A failure changes nothing."""
+    """Rebuild agent and Netguard without cache, then move `latest` after both builds succeed."""
     docker.require_daemon()
     day = today()
     before = {repo: _tags(docker, repo) for repo, _ in BUILDS}
@@ -168,7 +174,7 @@ def update_images(docker: Docker, out: TextIO, err: TextIO) -> None:
     try:
         for repo, context in BUILDS:
             tag = _new_tag(day, before[repo])
-            print(f"Building {repo}:{tag} (no cache, latest versions) ...", file=out)
+            print(f"Building {repo}:{tag} (no cache, pull base images) ...", file=out)
             docker.run("build", "--no-cache", "--pull", "-t", f"{repo}:{tag}", str(context))
             built.append(f"{repo}:{tag}")
     except DockerError:
@@ -313,18 +319,19 @@ def run_update(args, docker: Docker, runner: Runner | None, out: TextIO | None =
     steps = [only] if only else (["image", "integrations"] if args.after_cli else list(STEPS))
     code = 0
     if "cli" in steps:
-        result = upgrade_cli(runner, out, err)
+        tool = _installer(runner)
+        result = upgrade_cli(tool, runner, out, err)
         if result == "unmanaged" and only:
             return 1
         if result == "failed":
             code = 1
-        if result == "upgraded" and not only:
-            # The images are built from Dockerfiles that ship inside the CLI, so the new CLI must run the rest.
-            new_cli = find_cli()
+        if result == "upgraded" and tool is not None and not only:
+            # The upgraded CLI ships the Dockerfiles for the remaining steps.
+            new_cli = find_cli(tool, runner)
             if new_cli:
                 return runner([new_cli, "update", "--after-cli"], passthrough=True).code
-            print("warning: the upgraded asb was not found on PATH; the images are built by the old version",
-                  file=err)
+            print(f"warning: could not locate the upgraded CLI in the {tool} tool environment; "
+                  "continuing with the current CLI", file=err)
     if "image" in steps:
         update_images(docker, out, err)  # a failed build raises: nothing after it runs
     if "integrations" in steps:

@@ -88,7 +88,7 @@ Git inside the Session: status, diff, branch, add, commit and log work. `.git/co
 
 Two optional files: global `~/.config/agent-sandbox/config.yaml` (or under `$XDG_CONFIG_HOME`) and project `.agent-sandbox.yaml` in the Workspace root. Precedence: command-line flags, then the project file, then the global file, then defaults. Unknown or invalid keys are an error, never ignored. Every file needs `version: 1`.
 
-Project config is trusted like global config, with two exceptions: project config cannot enable the Host Browser (`network.host_browser`) and cannot set Portal secrets (`portals.<name>.secrets`, and a `login` whose variables are not `{generated}`). `asb check` lists every rule that came from the project file and marks `secrets.allow` and `secrets.skip` rules as weakening masking, because a committed or agent-edited project file can unmask Secret files or open host ports.
+Project config is trusted like global config, with two exceptions: project config cannot set `network.host_browser`, and it cannot set literal values for a Portal's `login` variables or replace a built-in or global Portal's `{generated}` value with a literal. The latter rule applies even if the project entry omits `login`. `asb check` lists rules that came from the project file and marks `secrets.allow` and `secrets.skip` rules as weakening masking. Review project config before use: a committed or agent-edited file can unmask Secret files or make new Host Services available.
 
 ```yaml
 version: 1
@@ -236,7 +236,9 @@ asb update --only image         # one step: cli, image or integrations
 asb update --rollback           # point `latest` back at the previous build
 ```
 
-`update` upgrades the CLI with `uv tool upgrade agent-sandbox` or `pipx upgrade agent-sandbox` (if you installed it another way it warns and skips that step), rebuilds the agent and Netguard images with no cache at the latest versions, and re-runs the herdr integration install in each Agent volume. Each build is tagged with its date; `latest` moves only after both images built, and the build it replaced is kept as `previous`. Rollback goes back one build only. Running Sessions keep their image and are never stopped; `update` lists them with "restart to apply: asb down && asb up". Two machines updated on different days can have different agent versions.
+`update` tries `uv tool upgrade agent-sandbox` or `pipx upgrade agent-sandbox`. On success it runs the remaining steps from that installer's tool environment, not from the first `asb` on `PATH`. If the CLI is unmanaged or the upgraded executable cannot be located, it warns and continues with the current CLI. A failed upgrade command also leaves the remaining steps to the current CLI, but the overall command exits nonzero. An unmanaged CLI is an error for `--only cli`.
+
+The image step rebuilds the agent and Netguard images with no cache and pulls their base images. Versions still follow the Dockerfiles, including any pins; the Portal publisher is not rebuilt by `update`. The integrations step re-installs herdr integrations in existing Agent volumes that support them. Each build gets a date tag; `latest` moves only after both images build, and the build it replaced is kept as `previous`. `--rollback` changes only the image tags, one step back. Running Sessions keep their image and are never stopped; the image and integration steps and rollback list them with "restart to apply: asb down && asb up". Two machines updated on different days can have different agent versions.
 
 ## Known limits
 

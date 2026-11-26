@@ -149,7 +149,7 @@ Result: Ready
 ## 9. Configuration (ADR-0005)
 
 - Global config: `~/.config/agent-sandbox/config.yaml`. Project config: `.agent-sandbox.yaml`.
-- Precedence: CLI, then project, then global, then defaults. Project config is trusted, with two exceptions it can't change: the Host Browser and Portal secrets.
+- Precedence: CLI, then project, then global, then defaults. Project config is trusted, but cannot select the [Host Browser (ADR-0021)](adr/0021-host-browser-through-netguard-helper-by-ip.md). Portal login variables in project config must be `{generated}`, and a project Portal cannot replace a built-in or global `{generated}` value with a literal, even if it omits the `login` key. See the [Hermes dashboard decision (ADR-0020)](adr/0020-hermes-dashboard-login-and-per-workspace-kanban-home.md).
 - `check` lists every rule that came from project config.
 - Invalid or unknown keys are rejected, never ignored.
 
