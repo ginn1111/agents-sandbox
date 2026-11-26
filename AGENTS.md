@@ -14,7 +14,12 @@
 - Python 3.11+, standard library plus one YAML parser. Installed with `uv tool install` or `pipx`. Two entry points: `agent-sandbox` and `asb`.
 - Docker only through the `docker` CLI as a subprocess with **argument lists, never shell strings**. No Docker SDK. Use the user's current Docker context (Linux Docker, Colima, Docker Desktop).
 - Netguard: an Alpine image with `iptables` and a shell script. Agent image: one Dockerfile for all agents. Toolchains come from mise.
-- No build, test or lint commands exist yet. When you add `pyproject.toml` and the test runner, add their exact commands here.
+- Setup: `uv sync` (creates `.venv`, installs PyYAML and pytest; build backend is hatchling, source in `src/agent_sandbox/`).
+- Test: `uv run pytest` (Seam 1, no Docker). Seam 2 end-to-end tests are in `tests/test_e2e_docker.py`, marked `docker`, and skip when no Docker daemon is reachable. Run only them with `uv run pytest -m docker`.
+- Run: `uv run asb <command>` or `uv run python -m agent_sandbox.cli <command>`. Install globally with `uv tool install .` or `pipx install .`.
+- Tests that touch Docker use `tests/fake_docker.py` (a recording stand-in passed via `main(argv, docker=[...])`); never call a real `docker` from Seam 1 tests.
+- If `/tmp` is mounted `noexec`, `.venv/bin/asb` cannot run; use `python -m agent_sandbox.cli` or `python -m pytest`.
+- No lint command is configured yet.
 
 ## Planned module layout (issue 0001)
 
