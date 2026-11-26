@@ -124,7 +124,8 @@ class Docker:
             self.run("rm", "-f", plan.netguard_name, check=False)
 
     def attach(self, name: str) -> int:
-        return self.run("exec", "-it", "-w", "/workspace", name, "bash", interactive=True).code
+        """Open the Session's own herdr (ADR-0009). No host herdr socket or environment is involved."""
+        return self.run("exec", "-it", "-w", "/workspace", name, "herdr", interactive=True).code
 
     def build(self, context: Path, image: str = IMAGE) -> None:
         self.require_daemon()

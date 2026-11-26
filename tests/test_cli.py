@@ -164,7 +164,7 @@ def test_attach_starts_the_session_then_opens_a_shell(workspace, docker, capsys)
     assert code == 0
     assert len(docker.containers) == 2
     last = docker.calls[-1]
-    assert last[0] == "exec" and "-it" in last and "bash" in last
+    assert last[0] == "exec" and "-it" in last and last[-1] == "herdr"
 
 
 def test_doctor_reports_docker_python_and_image(docker, capsys):

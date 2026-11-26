@@ -103,7 +103,9 @@ def test_offline_starts_only_the_session_on_the_none_network(workspace, docker, 
     assert code == 0 and runs(docker) == [session]
     (c,) = docker.containers.values()
     assert c["args"][c["args"].index("--network") + 1] == "none"
-    assert not any(c[0] == "exec" for c in docker.calls)
+    # no Netguard readiness probe; the only exec calls are the herdr integration installs in the Session
+    assert not any(c[0] == "exec" and c[1] != session for c in docker.calls)
+    assert not any(c[0] == "exec" and "test" in c for c in docker.calls)
 
 
 def test_up_twice_does_not_start_a_second_netguard(workspace, docker, capsys):

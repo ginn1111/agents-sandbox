@@ -9,6 +9,7 @@ from pathlib import Path
 from . import host_services
 from .config import ConfigError, load_config
 from .netguard import IMAGE as NETGUARD_IMAGE
+from .herdr import install_integrations
 from .masks import MaskError
 from .plan import IMAGE, plan
 from .render import render
@@ -24,7 +25,7 @@ def _parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="asb", description="Run AI coding agents confined to one Workspace.")
     sub = p.add_subparsers(dest="command", required=True)
     for name, help_ in (("up", "start the Session for a Workspace"),
-                        ("attach", "open a shell in the Session (starts it if needed)"),
+                        ("attach", "open herdr, the Watcher, in the Session (starts it if needed)"),
                         ("down", "stop and remove the Session"),
                         ("check", "show the plan without starting anything")):
         s = sub.add_parser(name, help=help_)
@@ -121,10 +122,14 @@ def main(argv: list[str] | None = None, *, docker: list[str] | None = None) -> i
             print(json.dumps(p.to_dict(), indent=2) if args.json else render(p))
             return 0 if p.result == "Ready" else 1
         elif args.command == "up":
-            _ensure_up(d, _plan_for(args), sys.stdout)
+            p = _plan_for(args)
+            if _ensure_up(d, p, sys.stdout):
+                install_integrations(d, p)
         elif args.command == "attach":
             p = _plan_for(args)
-            if not _ensure_up(d, p, sys.stdout):  # an older Session: Secret files may have appeared since `up`
+            if _ensure_up(d, p, sys.stdout):
+                install_integrations(d, p)
+            else:  # an older Session: Secret files may have appeared since `up`
                 for w in attach_warnings(d, p):
                     print(f"warning: {w}", file=sys.stderr)
             return d.attach(p.container_name)
