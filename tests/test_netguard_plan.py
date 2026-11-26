@@ -109,3 +109,16 @@ def test_plan_states_the_network_limit_it_cannot_cover(workspace):
 def test_check_json_carries_the_netguard_plan(workspace):
     d = make_plan(workspace).to_dict()
     assert d["netguard_run"][0] == "run" and d["netguard_rules"][0] == "*filter"
+
+
+def test_host_gateway_name_is_only_added_on_linux(workspace):
+    cfg = load_config(workspace)
+    assert flag_values(plan(workspace, cfg, platform="linux").netguard_run, "--add-host") == [
+        "host.docker.internal:host-gateway"]
+    assert flag_values(plan(workspace, cfg, platform="darwin").netguard_run, "--add-host") == []
+
+
+def test_check_output_states_the_network_mode(workspace):
+    from agent_sandbox.render import render
+    assert "Netguard" in render(make_plan(workspace))
+    assert "offline" in render(make_plan(workspace, offline=True)).lower()
