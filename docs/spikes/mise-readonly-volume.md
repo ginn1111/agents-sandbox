@@ -46,3 +46,5 @@ with everything it writes landing in the `agent-sandbox-mise` volume?
 - Hermes installs with `uv pip install -e` from the git checkout into `/opt/hermes/venv`. The official installer was not read (the fetch was blocked); the `hermes` entry point name is assumed.
 - Each agent honours `$HOME` for its login and settings (`~/.claude`, `~/.codex`, `~/.omp`, `~/.hermes`). Hermes also honours `HERMES_HOME`. If one agent stores state elsewhere, its login will not persist, and the e2e login test will not catch it because it uses a fake credentials file; check with a real login.
 - Concurrent Sessions of the same agent share its volume. Token refresh conflicts are not tested here (ADR-0006 asks for a per-agent test).
+- Docker can create the volume mount points `/agents/<name>` and `/mise` under a read-only root. It does this for `/workspace` already (ticket 02), so this is expected to hold.
+- `asb up` runs `docker volume create` for each volume before starting the Session; if that fails, `up` fails and nothing starts (fail closed).
