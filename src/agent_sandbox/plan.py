@@ -17,6 +17,7 @@ from .config import Config
 from .netguard import IMAGE as NETGUARD_IMAGE
 from .netguard import RULES_ENV, rules as netguard_rules
 from .discovery import Entry, discover
+from .portals import plan_entries as portal_entries
 
 IMAGE = "agent-sandbox-agent:latest"
 FALLBACK_UID = 1000
@@ -77,6 +78,9 @@ class SessionPlan:
     netguard_rules: list[str] = field(default_factory=list)
     # Configured Host Services (ADR-0002, ADR-0013): available, never active after `up`.
     host_services: list[dict] = field(default_factory=list)
+    # One entry per configured Portal (ADR-0010). Nothing is published by `up`; `asb portal start`
+    # publishes one on 127.0.0.1 (ADR-0013, ADR-0018).
+    portals: list[dict] = field(default_factory=list)
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -182,6 +186,8 @@ def plan(workspace: Path, config: Config, *, uid: int | None = None, gid: int | 
         errors.append(f"mask sources ({root}) are inside the Workspace; set XDG_STATE_HOME elsewhere")
 
     agents = [_agent_entry(n, config.agents[n], config.agent_env.get(n, {})) for n in sorted(config.agents)]
+    portal_list, portal_env, portal_errors = portal_entries(name, config.portals, config.offline)
+    errors += portal_errors
     volumes = sorted({a["volume"] for a in agents} | {MISE_VOLUME})
     volume_mounts: list[str] = []
     for a in agents:
@@ -205,6 +211,7 @@ def plan(workspace: Path, config: Config, *, uid: int | None = None, gid: int | 
         "--pids-limit", str(config.resources["pids_limit"]),
         "--network", "none" if ng_name is None else f"container:{ng_name}",
         "--env", "HOME=/tmp",
+        *(a for k, v in sorted(portal_env.items()) for a in ("--env", f"{k}={v}")),
         "--mount", _mount_arg(workspace, "/workspace"),
         *_mask_mounts(found.entries, sources),
         *volume_mounts,
@@ -223,6 +230,8 @@ def plan(workspace: Path, config: Config, *, uid: int | None = None, gid: int | 
 
     if ng_name is None and config.host_services:
         warnings.append("offline: the configured Host Services cannot be reached (there is no network)")
+    if config.offline and config.portals:
+        warnings.append("offline: the Session has no network, so Portals are unavailable")
 
     return SessionPlan(
         workspace=str(workspace),
@@ -243,4 +252,5 @@ def plan(workspace: Path, config: Config, *, uid: int | None = None, gid: int | 
         agents=agents,
         volumes=volumes,
         host_services=_hs.plan_entries(config.host_services, ng_name),
+        portals=portal_list,
     )

@@ -5,6 +5,7 @@ Unknown or invalid keys are rejected, never ignored.
 """
 from __future__ import annotations
 
+import copy
 import os
 import re
 from dataclasses import dataclass, field
@@ -33,6 +34,16 @@ DEFAULT_AGENTS = {
 }
 
 _MEMORY = re.compile(r"^[1-9][0-9]*[bkmg]?$", re.IGNORECASE)
+# Portal names become container-side identifiers and are typed on the command line.
+PORTAL_NAME = re.compile(r"^[a-z][a-z0-9-]{0,31}$")
+# Built-in Portal entries (ADR-0010). A config entry with the same name replaces one as a whole.
+DEFAULT_PORTALS = {
+    "plannotator": {
+        "port": 19432,
+        "env": {"PLANNOTATOR_REMOTE": "1", "PLANNOTATOR_PORT": "19432"},
+        "open": "/",
+    },
+}
 # Agent names become Docker volume names and directory names, so keep them plain.
 AGENT_NAME = re.compile(r"^[a-z][a-z0-9_-]{0,31}$")
 ENV_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
@@ -198,6 +209,8 @@ def _validate_portals(portals: Any, label: str, source: str) -> dict[str, dict[s
     portals = _expect_map(portals, label, "portals")
     out = {}
     for name, spec in portals.items():
+        if not isinstance(name, str) or not PORTAL_NAME.match(name):
+            raise ConfigError(f"{label}: portals.{name}: Portal names must match {PORTAL_NAME.pattern}")
         spec = _expect_map(spec, label, f"portals.{name}")
         _reject_unknown(spec, {"port", "command", "env", "open", "secrets"}, label, f"portals.{name}.")
         if "secrets" in spec and source == "project":
@@ -209,7 +222,11 @@ def _validate_portals(portals: Any, label: str, source: str) -> dict[str, dict[s
         _validate_port(spec["port"], label, f"portals.{name}.port")
         if "command" in spec:
             _validate_str_list(spec["command"], label, f"portals.{name}.command")
-        out[str(name)] = dict(spec)
+        if "env" in spec:
+            _validate_agent_env(spec["env"], label, f"portals.{name}.env")
+        if "open" in spec and (not isinstance(spec["open"], str) or not spec["open"].startswith("/")):
+            raise ConfigError(f"{label}: portals.{name}.open must be a URL path starting with '/'")
+        out[name] = dict(spec)
     return out
 
 
@@ -289,7 +306,7 @@ def load_config(
         host_services=[],
         host_browser=False,
         agents={k: list(v) for k, v in DEFAULT_AGENTS.items()},
-        portals={},
+        portals=copy.deepcopy(DEFAULT_PORTALS),
         offline=False,
         loaded_files=loaded,
     )
@@ -326,6 +343,10 @@ def load_config(
             cfg.portals[name] = spec
             if source == "project":
                 cfg.project_rules.append((f"portals.{name}", f"port {spec['port']}"))
+                if spec.get("command"):  # a project can make the Session run a program: show it
+                    cfg.project_rules.append((f"portals.{name}.command", " ".join(spec["command"])))
+                for key in spec.get("env", {}):  # names only: values may be tokens
+                    cfg.project_rules.append((f"portals.{name}.env", key))
         if "offline" in layer:
             cfg.offline = layer["offline"]
     return cfg
