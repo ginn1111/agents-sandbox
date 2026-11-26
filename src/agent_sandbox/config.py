@@ -13,6 +13,8 @@ from typing import Any
 
 import yaml
 
+from . import host_services as _hs
+
 PROJECT_FILE = ".agent-sandbox.yaml"
 SOURCES = ("default", "global", "project", "cli")
 
@@ -147,6 +149,11 @@ def _validate_network(net: Any, label: str, source: str) -> dict[str, Any]:
                     raise ConfigError(f"{label}: network.host_services[{i}] is missing '{req}'")
             if not isinstance(item["name"], str) or not isinstance(item["host"], str):
                 raise ConfigError(f"{label}: network.host_services[{i}] name and host must be strings")
+            for key, problem in (("name", _hs.name_error(item["name"])), ("host", _hs.host_error(item["host"]))):
+                if problem:
+                    raise ConfigError(f"{label}: network.host_services[{i}].{key} {problem}")
+            if any(s["name"] == item["name"] for s in services):
+                raise ConfigError(f"{label}: network.host_services name '{item['name']}' is listed more than once")
             _validate_port(item["port"], label, f"network.host_services[{i}].port")
             services.append(dict(item))
         out["host_services"] = services

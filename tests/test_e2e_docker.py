@@ -590,3 +590,96 @@ def test_up_refuses_when_a_masked_path_became_a_symlinked_directory(workspace, m
     ps = subprocess.run(["docker", "ps", "-aq", "--filter", f"name={session_name(workspace.resolve())}"],
                         capture_output=True, text=True)
     assert ps.stdout.strip() == ""
+
+
+# --------------------------------------------------------------------------- Host Services (ticket #6)
+# UNVERIFIED: written on a host with no Docker daemon. See docs/spikes/host-services.md.
+
+
+@pytest.fixture
+def host_service_session(workspace, host_listener):
+    """A Session whose config lists host.docker.internal:<host_listener> as `listed`. Nothing enabled yet."""
+    (workspace / ".agent-sandbox.yaml").write_text(
+        "version: 1\nnetwork:\n  host_services:\n"
+        f"    - {{name: listed, host: host.docker.internal, port: {host_listener}}}\n")
+    assert main(["build"]) == 0
+    assert main(["up", str(workspace)]) == 0
+    yield session_name(workspace.resolve())
+    main(["down", str(workspace)])
+
+
+@pytest.fixture
+def other_host_port():
+    """A second listener on the host: the 'unlisted port on the same host'."""
+    server = socket.socket()
+    server.bind(("0.0.0.0", 0))
+    server.listen(16)
+    server.settimeout(0.2)
+    stop = threading.Event()
+
+    def accept():
+        while not stop.is_set():
+            try:
+                server.accept()[0].close()
+            except OSError:
+                pass
+
+    t = threading.Thread(target=accept, daemon=True)
+    t.start()
+    yield server.getsockname()[1]
+    stop.set()
+    t.join(timeout=2)
+    server.close()
+
+
+def test_a_configured_host_service_is_closed_until_it_is_enabled(host_service_session, host_listener):
+    assert not reaches(host_service_session, "host.docker.internal", host_listener)  # `up` opens nothing (ADR-0013)
+
+
+def test_a_listed_host_port_is_reachable_and_an_unlisted_port_on_the_same_host_is_not(
+        host_service_session, workspace, host_listener, other_host_port):
+    assert main(["service", "enable", "listed", str(workspace)]) == 0
+    assert reaches(host_service_session, "host.docker.internal", host_listener)
+    assert not reaches(host_service_session, "host.docker.internal", other_host_port)
+    assert not reaches(host_service_session, default_gateway(host_service_session), other_host_port)  # nor by address
+    lan = host_lan_address()
+    if lan:
+        assert not reaches(host_service_session, lan, other_host_port)
+
+
+def test_enabling_does_not_restart_the_session_or_netguard(host_service_session, workspace):
+    def started(name):
+        return subprocess.run(["docker", "inspect", "--format", "{{.State.StartedAt}}|{{.Id}}", name],
+                              capture_output=True, text=True).stdout.strip()
+
+    before = (started(host_service_session), started(netguard_of(host_service_session)))
+    assert main(["service", "enable", "listed", str(workspace)]) == 0
+    assert (started(host_service_session), started(netguard_of(host_service_session))) == before
+
+
+def test_disable_closes_the_host_service_again(host_service_session, workspace, host_listener):
+    assert main(["service", "enable", "listed", str(workspace)]) == 0
+    assert reaches(host_service_session, "host.docker.internal", host_listener)
+    assert main(["service", "disable", "listed", str(workspace)]) == 0
+    assert not reaches(host_service_session, "host.docker.internal", host_listener)
+
+
+def test_the_host_service_rules_end_with_the_session(host_service_session, workspace, host_listener):
+    assert main(["service", "enable", "listed", str(workspace)]) == 0
+    assert main(["down", str(workspace)]) == 0
+    assert main(["up", str(workspace)]) == 0  # a new Netguard: nothing is enabled
+    assert not reaches(host_service_session, "host.docker.internal", host_listener)
+
+
+def test_the_session_cannot_open_a_host_service_itself(host_service_session, host_listener):
+    r = sh(host_service_session, f"iptables -A NG_SERVICES -p tcp --dport {host_listener} -j ACCEPT")
+    assert r.returncode != 0  # no capabilities, and the Session image has no iptables
+    assert not reaches(host_service_session, "host.docker.internal", host_listener)
+
+
+def test_doctor_reports_that_the_enabled_host_service_answers(host_service_session, workspace, capsys):
+    assert main(["service", "enable", "listed", str(workspace)]) == 0
+    capsys.readouterr()
+    main(["doctor", str(workspace)])
+    out = capsys.readouterr().out
+    assert "Host Service listed" in out and "answers from the Session" in out

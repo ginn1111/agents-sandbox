@@ -105,6 +105,21 @@ elif cmd == "volume" and args[1] == "create":
     if args[-1] not in state["volumes"]:
         state["volumes"].append(args[-1])
     print(args[-1])
+elif cmd == "exec" and "/usr/local/bin/asb-service" in args:
+    # Host Service helper: `docker exec <netguard> asb-service enable <name> <host> <port> | disable <name> | list`
+    i = args.index("/usr/local/bin/asb-service")
+    action, rest = args[i + 1], args[i + 2:]
+    open_ = state.setdefault("services", {}).setdefault(args[1], {})
+    if state.get("service_fail") == action:
+        print("asb-service: fake failure", file=sys.stderr)
+        save()
+        sys.exit(1)
+    if action == "enable":
+        open_[rest[0]] = f"{rest[1]}:{rest[2]}"
+    elif action == "disable":
+        open_.pop(rest[0], None)
+    elif action == "list":
+        print("\n".join(sorted(open_)))
 elif cmd == "exec":
     # readiness probe: `docker exec <netguard> test -f /run/netguard/ready`
     c = state["containers"].get(args[1])

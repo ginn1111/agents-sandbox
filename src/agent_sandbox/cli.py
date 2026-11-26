@@ -6,6 +6,7 @@ import json
 import sys
 from pathlib import Path
 
+from . import host_services
 from .config import ConfigError, load_config
 from .netguard import IMAGE as NETGUARD_IMAGE
 from .masks import MaskError
@@ -33,7 +34,12 @@ def _parser() -> argparse.ArgumentParser:
         if name in ("up", "attach", "check"):
             s.add_argument("--offline", action="store_true", help="no network at all")
     sub.add_parser("ls", help="list running Sessions")
-    sub.add_parser("doctor", help="check the local environment")
+    d = sub.add_parser("doctor", help="check the local environment and whether each Host Service answers")
+    d.add_argument("dir", nargs="?", default=None, metavar="DIR")
+    sv = sub.add_parser("service", help="enable or disable one configured Host Service in the running Session")
+    sv.add_argument("action", choices=("enable", "disable"))
+    sv.add_argument("name")
+    sv.add_argument("dir", nargs="?", default=None, metavar="DIR")
     sub.add_parser("build", help="build the agent image")
     return p
 
@@ -59,7 +65,33 @@ def _ensure_up(docker: Docker, p, out) -> bool:
     return True
 
 
-def _doctor(docker: Docker) -> int:
+def _doctor_services(docker: Docker, directory: str | None) -> None:
+    """Report whether each configured Host Service answers. Needs a Workspace; skipped without one."""
+    try:
+        p = _plan_for(argparse.Namespace(dir=directory))
+    except WorkspaceError as e:
+        if directory is not None:  # no usable Workspace in the current directory is normal; an explicit DIR is not
+            print(f"FAIL Host Services: {e}")
+        return
+    except ConfigError as e:
+        print(f"FAIL Host Services: {e}")
+        return
+    for level, text in host_services.doctor_lines(docker, p):
+        print(f"{level:<4} {text}")
+
+
+def _service(docker: Docker, args) -> None:
+    p = _plan_for(args)
+    if args.action == "enable":
+        e = host_services.enable(docker, p, args.name)
+        print(f"Host Service enabled: {e['name']} {e['host']}:{e['port']} "
+              f"(until `asb service disable {e['name']}` or `asb down`)")
+    else:
+        host_services.disable(docker, p, args.name)
+        print(f"Host Service disabled: {args.name}")
+
+
+def _doctor(docker: Docker, directory: str | None = None) -> int:
     ok = True
     v = sys.version_info
     py_ok = v >= (3, 11)
@@ -76,6 +108,7 @@ def _doctor(docker: Docker) -> int:
     except DockerError as e:
         print(f"FAIL Docker: {e}")
         ok = False
+    _doctor_services(docker, directory)
     return 0 if ok else 1
 
 
@@ -107,13 +140,15 @@ def main(argv: list[str] | None = None, *, docker: list[str] | None = None) -> i
             for name, ws in rows:
                 print(f"{name}\t{ws}")
         elif args.command == "doctor":
-            return _doctor(d)
+            return _doctor(d, args.dir)
+        elif args.command == "service":
+            _service(d, args)
         elif args.command == "build":
             d.build(IMAGE_CONTEXT)
             print(f"Built {IMAGE}")
             d.build(NETGUARD_CONTEXT, NETGUARD_IMAGE)
             print(f"Built {NETGUARD_IMAGE}")
-    except (WorkspaceError, ConfigError, DockerError, MaskError) as e:
+    except (WorkspaceError, ConfigError, DockerError, MaskError, host_services.ServiceError) as e:
         print(f"error: {e}", file=sys.stderr)
         return 1
     return 0
