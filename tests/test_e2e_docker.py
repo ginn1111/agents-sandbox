@@ -578,9 +578,10 @@ def test_integration_install_is_idempotent_across_down_and_up(workspace):
 
 
 def test_a_pane_agent_gets_its_own_agent_volume_as_home(session):
-    r = dx(session, "sh", "-c", "HOME=/tmp hermes --version >/dev/null 2>&1; command -v hermes; "
-           "env -i PATH=$PATH sh -c 'echo ok' ")
-    assert r.stdout.split()[0] == "/opt/asb/bin/hermes", r.stdout + r.stderr
+    # what a herdr pane (HOME=/tmp) runs when the user types the agent's name
+    for agent in ("hermes", "omp", "claude", "codex"):
+        r = dx(session, "sh", "-c", f"command -v {agent}")
+        assert r.stdout.strip() == f"/opt/asb/bin/{agent}", (agent, r.stdout, r.stderr)
 
 
 def test_attach_start_a_pane_detach_reattach_and_see_the_same_pane(workspace):
