@@ -1,0 +1,4 @@
+# herdr's config inside the Session (read-only, from the image; HERDR_CONFIG_PATH points here).
+# The Session's own herdr: it never talks to a host herdr (ADR-0009).
+# We install the Hermes and OMP integrations ourselves (`asb up`), so skip the first-run setup.
+onboarding = false

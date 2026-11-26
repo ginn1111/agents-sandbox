@@ -192,6 +192,7 @@ def plan(workspace: Path, config: Config, *, uid: int | None = None, gid: int | 
         "--label", "agent-sandbox=session",
         "--label", f"agent-sandbox.workspace={workspace}",
         "--read-only",
+        "--init",  # reaps the processes herdr panes leave behind; adds no capability
         "--tmpfs", "/tmp", "--tmpfs", "/run",
         "--user", f"{uid}:{gid}",
         "--cap-drop", "ALL",

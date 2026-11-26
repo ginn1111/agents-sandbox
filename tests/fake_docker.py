@@ -105,6 +105,10 @@ elif cmd == "volume" and args[1] == "create":
 elif cmd == "exec":
     # readiness probe: `docker exec <netguard> test -f /run/netguard/ready`
     c = state["containers"].get(args[1])
+    if "integration" in args and args[-1] in state.get("fail_exec", []):
+        print(f"integration install {args[-1]} failed", file=sys.stderr)
+        save()
+        sys.exit(1)
     if "test" in args and (c is None or c.get("exited") or not state.get("netguard_ready", True)):
         save()
         sys.exit(1)

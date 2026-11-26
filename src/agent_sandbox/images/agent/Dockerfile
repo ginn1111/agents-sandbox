@@ -13,7 +13,8 @@
 #   /agents/<name>   one Agent volume per agent, mounted as that agent's HOME (ADR-0006).
 #
 # Nothing from the host (agent config, credentials, shell settings) is copied in.
-# herdr, Plannotator, chrome-devtools-mcp and the shell prompt arrive in later tickets.
+# herdr (the Watcher, ADR-0009) is a static binary in /usr/local/bin; its config is /etc/asb/herdr.toml.
+# Plannotator, chrome-devtools-mcp and the shell prompt arrive in later tickets.
 FROM debian:bookworm-slim
 
 ENV DEBIAN_FRONTEND=noninteractive
@@ -76,9 +77,30 @@ RUN curl -fsSL https://astral.sh/uv/install.sh | UV_INSTALL_DIR=/usr/local/bin U
 # Agents added only through config get no pre-created home; `asb check` warns about that.
 RUN for a in hermes omp claude codex; do mkdir -p -m 0777 "/agents/$a"; done
 
+# ---- herdr, the Watcher (ADR-0009): the official release binary for this CPU, latest at build time
+# (ADR-0012). `asb attach` runs it with `docker exec`; Hermes, OMP and shells are its panes. Its
+# integrations are installed by `asb up` into the Agent volumes, not here (they live in $HOME).
+# HERDR_CONFIG_PATH keeps its config in the read-only image; its state and socket go under HOME (a tmpfs).
+RUN arch="$(uname -m)" \
+ && case "$arch" in x86_64|aarch64) ;; *) echo "herdr: unsupported CPU $arch" >&2; exit 1 ;; esac \
+ && curl -fsSL -o /usr/local/bin/herdr \
+      "https://github.com/herdrdev/herdr/releases/latest/download/herdr-linux-$arch" \
+ && chmod 0755 /usr/local/bin/herdr \
+ && herdr --version
+COPY herdr.toml /etc/asb/herdr.toml
+ENV HERDR_CONFIG_PATH=/etc/asb/herdr.toml
+
+# ---- Agent wrappers: a pane inherits the Session's HOME (/tmp), so `hermes` typed in a herdr pane
+# would lose its login. /opt/asb/bin/<agent> sets HOME to that agent's Agent volume (ADR-0006), then
+# runs the real agent found further down PATH.
+COPY asb-agent /opt/asb/asb-agent
+RUN chmod 0755 /opt/asb/asb-agent \
+ && mkdir -p /opt/asb/bin \
+ && for a in hermes omp claude codex; do ln -s ../asb-agent "/opt/asb/bin/$a"; done
+
 # mise shims first: a project's pinned node/python/go win for everything run in the Workspace.
 # The agents themselves are launched from bin-wrapped, which is fixed to the private Node.
-ENV PATH=/mise/shims:/opt/agents/bin-wrapped:/opt/agents/bin:/opt/hermes/venv/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
+ENV PATH=/opt/asb/bin:/mise/shims:/opt/agents/bin-wrapped:/opt/agents/bin:/opt/hermes/venv/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
     HOME=/tmp
 
 USER 1000:1000

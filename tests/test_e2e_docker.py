@@ -508,3 +508,116 @@ def test_a_project_pinning_another_node_gets_it_through_mise(session, workspace)
     assert dx(session, "claude", "--version", workdir="/workspace").returncode == 0
     # the new version lives in the shared mise volume, not in the read-only image
     assert dx(session, "sh", "-c", f"ls /mise/installs/node | grep -q '^{pinned}'").returncode == 0
+
+
+# ---- ticket 07: herdr inside the Session (ADR-0009). UNVERIFIED: written with no Docker daemon.
+# Spike notes: docs/spikes/herdr-in-session.md. herdr CLI forms used here (`pane list`, `pane run`,
+# `workspace create`) come from herdr's docs; adjust them to the pinned herdr if a name differs.
+
+import json as _json
+import os
+import pty
+import select
+import sys
+import time
+
+
+def herdr(name, *argv):
+    return dx(name, "herdr", *argv, workdir="/workspace")
+
+
+def _attach_pty(workspace, keys=b"", wait=4.0):
+    """Run `asb attach` on a pseudo terminal, send `keys` after `wait` seconds, return the exit code."""
+    pid, fd = pty.fork()
+    if pid == 0:
+        os.execv(sys.executable, [sys.executable, "-m", "agent_sandbox.cli", "attach", str(workspace)])
+    end = time.monotonic() + wait
+    out = b""
+    while time.monotonic() < end:
+        if select.select([fd], [], [], 0.2)[0]:
+            try:
+                out += os.read(fd, 65536)
+            except OSError:
+                break
+    if keys:
+        os.write(fd, keys)
+    done = time.monotonic() + 15
+    while time.monotonic() < done:
+        pid_done, status = os.waitpid(pid, os.WNOHANG)
+        if pid_done:
+            return os.waitstatus_to_exitcode(status), out
+        if select.select([fd], [], [], 0.2)[0]:
+            try:
+                out += os.read(fd, 65536)
+            except OSError:
+                pass
+    os.kill(pid, 9)
+    raise AssertionError("asb attach did not exit after the detach keys")
+
+
+def test_herdr_is_in_the_image_and_runs_as_the_session_user(session):
+    r = dx(session, "herdr", "--version")
+    assert r.returncode == 0 and r.stdout.strip(), r.stderr
+    assert dx(session, "sh", "-c", "echo $HERDR_CONFIG_PATH").stdout.strip() == "/etc/asb/herdr.toml"
+
+
+def test_up_installs_the_hermes_and_omp_integrations_into_their_agent_volumes(session):
+    r = dx(session, "sh", "-c", "ls /agents/hermes/.hermes/plugins/herdr-agent-state && grep -q herdr-agent-state /agents/hermes/.hermes/config.yaml")
+    assert r.returncode == 0, r.stderr
+    assert dx(session, "ls", "/agents/omp/.omp/agent/extensions/herdr-omp-agent-state.ts").returncode == 0
+    # never in another agent's volume
+    assert dx(session, "sh", "-c", "ls /agents/claude/.omp /agents/claude/.hermes").returncode != 0
+
+
+def test_integration_install_is_idempotent_across_down_and_up(workspace):
+    for _ in range(2):
+        assert main(["up", str(workspace)]) == 0
+        name = session_name(workspace.resolve())
+        assert dx(name, "ls", "/agents/omp/.omp/agent/extensions/herdr-omp-agent-state.ts").returncode == 0
+        assert main(["down", str(workspace)]) == 0
+
+
+def test_a_pane_agent_gets_its_own_agent_volume_as_home(session):
+    r = dx(session, "sh", "-c", "HOME=/tmp hermes --version >/dev/null 2>&1; command -v hermes; "
+           "env -i PATH=$PATH sh -c 'echo ok' ")
+    assert r.stdout.split()[0] == "/opt/asb/bin/hermes", r.stdout + r.stderr
+
+
+def test_attach_start_a_pane_detach_reattach_and_see_the_same_pane(workspace):
+    assert main(["build"]) == 0
+    name = session_name(workspace.resolve())
+    try:
+        code, _ = _attach_pty(workspace, keys=b"\x02q")  # herdr's detach: ctrl+b q
+        assert code == 0
+        # attach started the Session; the herdr server keeps running after the client detached
+        assert dx(name, "pgrep", "-x", "herdr").returncode == 0
+        assert herdr(name, "pane", "run", "w1:p1", " echo asb-marker-$$ > /tmp/marker; sleep 600").returncode == 0
+        panes_before = herdr(name, "pane", "list").stdout
+        code, _ = _attach_pty(workspace, keys=b"\x02q")  # reattach, then detach again
+        assert code == 0
+        assert herdr(name, "pane", "list").stdout == panes_before
+        assert dx(name, "sh", "-c", "grep -q asb-marker /tmp/marker && pgrep -f 'sleep 600'").returncode == 0
+    finally:
+        main(["down", str(workspace)])
+
+
+def test_herdr_reports_state_for_hermes_and_omp_panes(session):
+    """The spike question: integrations talk to herdr's own socket inside the container."""
+    fake = "printf '%s\\n' ready; sleep 600"
+    r = herdr(session, "pane", "run", "w1:p1", f" HOME=/agents/omp omp --version; {fake}")
+    assert r.returncode == 0, r.stderr
+    status = herdr(session, "integration", "status")
+    assert status.returncode == 0 and "hermes" in status.stdout and "omp" in status.stdout, status.stdout + status.stderr
+
+
+def test_no_herdr_socket_from_the_host_is_visible_in_the_session(session, home):
+    host_sock = home / ".config" / "herdr" / "herdr.sock"
+    host_sock.parent.mkdir(parents=True, exist_ok=True)
+    host_sock.write_text("")
+    r = dx(session, "sh", "-c", "find / -xdev \\( -name 'herdr*.sock' -o -name '*.sock' \\) 2>/dev/null; echo $HERDR_SOCKET_PATH")
+    assert str(home) not in r.stdout
+    mounts = subprocess.run(["docker", "inspect", "--format", "{{json .Mounts}}", session],
+                            capture_output=True, text=True).stdout
+    assert all(m["Type"] != "bind" or m["Destination"] == "/workspace" for m in _json.loads(mounts))
+    # the Session's herdr socket is its own: it lives under the Session's HOME (a tmpfs), not on the host
+    assert not any(str(home) in m.get("Source", "") for m in _json.loads(mounts))

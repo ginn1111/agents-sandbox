@@ -1,0 +1,26 @@
+#!/bin/sh
+# Run the real agent with its own Agent volume as HOME (ADR-0006), whatever pane or shell started it.
+#
+# herdr panes inherit the Session's HOME (/tmp, a tmpfs), so a bare `hermes` typed in a pane would
+# lose its login and settings. /opt/asb/bin/<agent> is a symlink to this script and comes first on
+# PATH: it sets HOME=/agents/<agent> and execs the real binary found further down PATH.
+# Nothing is read from the host and no other variable is changed.
+name=${0##*/}
+dir=$(dirname -- "$0")
+rest=
+oldifs=$IFS
+IFS=:
+for p in $PATH; do
+  [ "$p" = "$dir" ] || rest=${rest:+$rest:}$p
+done
+IFS=$oldifs
+real=$(PATH=$rest command -v "$name") || real=
+if [ -z "$real" ]; then
+  echo "asb: $name is not installed in this image" >&2
+  exit 127
+fi
+HOME=/agents/$name
+export HOME
+PATH=$rest
+export PATH
+exec "$real" "$@"
