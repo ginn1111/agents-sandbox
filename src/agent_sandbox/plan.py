@@ -16,6 +16,22 @@ from .config import Config
 IMAGE = "agent-sandbox-agent:latest"
 FALLBACK_UID = 1000
 
+# Agent volumes (ADR-0006): one per agent, named after the agent only, so the same
+# volume is reused by every Workspace and never by another agent.
+AGENT_HOME_ROOT = "/agents"
+MISE_VOLUME = "agent-sandbox-mise"
+MISE_DIR = "/mise"
+# Agents the image ships and pre-creates a writable home for (see images/agent/Dockerfile).
+IMAGE_AGENTS = frozenset({"hermes", "omp", "claude", "codex"})
+
+
+def agent_volume(name: str) -> str:
+    return f"agent-sandbox-{name}"
+
+
+def agent_home(name: str) -> str:
+    return f"{AGENT_HOME_ROOT}/{name}"
+
 # SPEC section 11. Shown by `check` and kept in sync with the README.
 LIMITS = [
     "Masking is by filename only; secrets inside other files are not detected.",
@@ -38,6 +54,11 @@ class SessionPlan:
     project_rules: list[tuple[str, str]]
     session_run: list[str]
     warnings: list[str] = field(default_factory=list)
+    # One entry per enabled agent: name, command, env, volume, home and `launch`,
+    # the argv to run inside the Session (`docker exec <session> <launch...>`).
+    agents: list[dict] = field(default_factory=list)
+    # Named volumes the Session mounts; `up` creates them and `down` never removes them.
+    volumes: list[str] = field(default_factory=list)
     limits: list[str] = field(default_factory=lambda: list(LIMITS))
     result: str = "Ready"
 
@@ -54,6 +75,20 @@ def session_name(workspace: Path) -> str:
 def _mount_arg(source: Path, target: str) -> str:
     quoted = str(source).replace('"', '""')
     return f'type=bind,"source={quoted}",target={target}'
+
+
+def _volume_mount_arg(volume: str, target: str) -> str:
+    return f"type=volume,source={volume},target={target}"
+
+
+def _agent_entry(name: str, command: list[str], env: dict[str, str]) -> dict:
+    home = agent_home(name)
+    # `env` sets only what the config names: nothing is inherited from the host.
+    launch = ["env", f"HOME={home}", *(f"{k}={v}" for k, v in sorted(env.items())), *command]
+    return {
+        "name": name, "command": list(command), "env": dict(env),
+        "volume": agent_volume(name), "home": home, "launch": launch,
+    }
 
 
 def _external_git_warnings(workspace: Path) -> list[str]:
@@ -82,6 +117,13 @@ def plan(workspace: Path, config: Config, *, uid: int | None = None, gid: int | 
         uid, gid = FALLBACK_UID, FALLBACK_UID
     name = session_name(workspace)
 
+    agents = [_agent_entry(n, config.agents[n], config.agent_env.get(n, {})) for n in sorted(config.agents)]
+    volumes = sorted({a["volume"] for a in agents} | {MISE_VOLUME})
+    volume_mounts: list[str] = []
+    for a in agents:
+        volume_mounts += ["--mount", _volume_mount_arg(a["volume"], a["home"])]
+    volume_mounts += ["--mount", _volume_mount_arg(MISE_VOLUME, MISE_DIR)]
+
     args = [
         "run", "-d",
         "--name", name,
@@ -99,6 +141,7 @@ def plan(workspace: Path, config: Config, *, uid: int | None = None, gid: int | 
         "--network", "none",
         "--env", "HOME=/tmp",
         "--mount", _mount_arg(workspace, "/workspace"),
+        *volume_mounts,
         "-w", "/workspace",
         IMAGE,
     ]
@@ -109,6 +152,13 @@ def plan(workspace: Path, config: Config, *, uid: int | None = None, gid: int | 
         ".git/config, is readable and writable by the agent.",
     ]
     warnings += _external_git_warnings(workspace)
+    for a in agents:
+        if a["name"] not in IMAGE_AGENTS:
+            warnings.append(
+                f"agent '{a['name']}' is not installed in the image, and Docker creates its volume "
+                f"{a['volume']} root-owned, so {a['home']} may not be writable; add the agent to the "
+                "image Dockerfile (ADR-0007)"
+            )
 
     return SessionPlan(
         workspace=str(workspace),
@@ -118,4 +168,6 @@ def plan(workspace: Path, config: Config, *, uid: int | None = None, gid: int | 
         project_rules=list(config.project_rules),
         session_run=args,
         warnings=warnings,
+        agents=agents,
+        volumes=volumes,
     )

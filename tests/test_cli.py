@@ -149,8 +149,8 @@ def test_down_never_removes_volumes(workspace, docker, capsys):
     docker.has_image()
     run(["up", str(workspace)], docker, capsys)
     run(["down", str(workspace)], docker, capsys)
-    for call in docker.calls:
-        assert "volume" not in call and "-v" not in call
+    for call in docker.calls:  # volumes may be created, never removed
+        assert call[:2] not in (["volume", "rm"], ["volume", "prune"]) and "-v" not in call
 
 
 def test_down_when_nothing_runs_is_fine(workspace, docker, capsys):

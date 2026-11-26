@@ -58,6 +58,15 @@ elif cmd == "ps":
                 ok &= val.strip("^$") == name
         if ok:
             print(f"{name}\t{c['labels'].get('agent-sandbox.workspace', '')}")
+elif cmd == "volume" and args[1] == "create":
+    if os.environ.get("FAKE_DOCKER_FAIL_VOLUME") == args[-1]:
+        print(f"cannot create volume {args[-1]}", file=sys.stderr)
+        save()
+        sys.exit(1)
+    state.setdefault("volumes", [])
+    if args[-1] not in state["volumes"]:
+        state["volumes"].append(args[-1])
+    print(args[-1])
 elif cmd == "exec":
     pass
 save()

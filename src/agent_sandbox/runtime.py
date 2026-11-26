@@ -65,6 +65,9 @@ class Docker:
         self.require_daemon()
         if not self.has_image(plan.image):
             raise DockerError(f"image {plan.image} not found; run `asb build` first")
+        # Volumes first, so a failure leaves no half-started Session. Never removed by the CLI.
+        for volume in plan.volumes:
+            self.run("volume", "create", "--label", "agent-sandbox=volume", volume)
         try:
             self.run(*plan.session_run)
         except DockerError:
