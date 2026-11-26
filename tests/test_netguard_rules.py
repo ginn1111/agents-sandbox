@@ -63,9 +63,9 @@ def test_dns_services_and_local_chains_are_consulted_before_the_range_drops():
 def test_loopback_and_replies_are_allowed_but_nothing_new_comes_in():
     lines = rules()
     assert "-A INPUT -i lo -j ACCEPT" in lines
-    assert "-A INPUT -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT" in lines
+    assert "-A INPUT -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT" in lines
     assert "-A OUTPUT -o lo -j ACCEPT" in lines
-    assert "-A OUTPUT -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT" in lines
+    assert "-A OUTPUT -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT" in lines
     inbound = [l for l in lines if l.startswith("-A INPUT")]
     assert len(inbound) == 2  # no inbound port is open (Portals are a later, explicit step)
 
@@ -73,3 +73,12 @@ def test_loopback_and_replies_are_allowed_but_nothing_new_comes_in():
 def test_no_host_service_is_open_by_default():
     # ADR-0013: Host Services are opened only by an explicit command, never by `up`
     assert not [l for l in rules() if "--dport" in l]
+
+
+def test_rule_text_is_in_the_canonical_form_iptables_save_prints():
+    # The entrypoint verifies the applied rules by comparing lines with `iptables-save`, which prints
+    # conntrack states sorted. A different order would make every start fail verification.
+    for line in rules():
+        if "--ctstate" in line:
+            states = line.split("--ctstate ")[1].split()[0].split(",")
+            assert states == sorted(states)

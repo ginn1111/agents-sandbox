@@ -36,9 +36,9 @@ def rules() -> list[str]:
     lines += [f":{chain} - [0:0]" for chain in EXCEPTION_CHAINS]
     lines += [
         "-A INPUT -i lo -j ACCEPT",
-        "-A INPUT -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT",
+        "-A INPUT -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT",
         "-A OUTPUT -o lo -j ACCEPT",
-        "-A OUTPUT -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT",
+        "-A OUTPUT -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT",
     ]
     lines += [f"-A OUTPUT -j {chain}" for chain in EXCEPTION_CHAINS]
     lines += [f"-A OUTPUT -d {net} -j DROP" for net in BLOCKED_RANGES]
