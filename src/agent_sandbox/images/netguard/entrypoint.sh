@@ -55,6 +55,8 @@ iptables -A NG_LOCAL -d "$subnet" -j DROP || fail "cannot block the subnet $subn
 
 # 4. verify what is actually applied
 saved=$(iptables-save) || fail "cannot verify the rules: iptables-save failed"
+# iptables-save may list conntrack states in either order; compare in one order
+saved=$(printf '%s\n' "$saved" | sed 's/ESTABLISHED,RELATED/RELATED,ESTABLISHED/')
 for policy in ":INPUT DROP" ":FORWARD DROP" ":OUTPUT DROP"; do
     printf '%s\n' "$saved" | grep -q -- "^$policy " || fail "verify: policy '$policy' is not applied"
 done

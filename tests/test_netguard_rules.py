@@ -75,10 +75,10 @@ def test_no_host_service_is_open_by_default():
     assert not [l for l in rules() if "--dport" in l]
 
 
-def test_rule_text_is_in_the_canonical_form_iptables_save_prints():
-    # The entrypoint verifies the applied rules by comparing lines with `iptables-save`, which prints
-    # conntrack states sorted. A different order would make every start fail verification.
+def test_conntrack_states_are_written_in_the_order_iptables_save_prints_them():
+    # The entrypoint verifies by comparing lines with `iptables-save` output, which lists the
+    # conntrack states as RELATED,ESTABLISHED (UNVERIFIED here: see docs/spikes/netguard.md; the
+    # script also normalises the order, so a mismatch cannot fail the start by itself).
     for line in rules():
         if "--ctstate" in line:
-            states = line.split("--ctstate ")[1].split()[0].split(",")
-            assert states == sorted(states)
+            assert "--ctstate RELATED,ESTABLISHED " in line
