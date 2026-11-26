@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from .netguard import READY_FILE
+from .masks import MaskError, check_originals_exist, prepare_mask_sources, verify_session_masks
 from .plan import IMAGE, SessionPlan
 
 
@@ -89,19 +90,27 @@ class Docker:
         """Start Netguard, wait until it is ready, then the Session. Fails closed: a partial start is removed.
 
         The Session joins Netguard's network, so it never runs without Netguard's rules in place.
+        A blocked plan, a missing image or a missing Secret file stops everything before anything starts.
         """
+        if plan.errors:
+            raise MaskError("; ".join(plan.errors))
         self.require_daemon()
         wanted = [plan.image] + ([plan.netguard_image] if plan.netguard_run else [])
         for image in wanted:
             if not self.has_image(image):
                 raise DockerError(f"image {image} not found; run `asb build` first")
+        check_originals_exist(plan)
+        prepare_mask_sources(plan)
         try:
             if plan.netguard_run:
                 self.run("rm", "-f", plan.netguard_name, check=False)  # a leftover from a crashed run
                 self.run(*plan.netguard_run)
                 self._wait_netguard_ready(plan.netguard_name)
             self.run(*plan.session_run)
-        except DockerError:
+            if any(e.status == "MASKED" for e in plan.entries):
+                r = self.run("inspect", "--format", "{{json .Mounts}}", plan.container_name)
+                verify_session_masks(plan, r.out)
+        except (DockerError, MaskError):
             self.stop(plan)
             raise
 

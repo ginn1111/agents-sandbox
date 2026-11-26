@@ -15,6 +15,7 @@ from pathlib import Path
 from .config import Config
 from .netguard import IMAGE as NETGUARD_IMAGE
 from .netguard import RULES_ENV, rules as netguard_rules
+from .discovery import Entry, discover
 
 IMAGE = "agent-sandbox-agent:latest"
 FALLBACK_UID = 1000
@@ -24,6 +25,7 @@ LIMITS = [
     "Masking is by filename only; secrets inside other files are not detected.",
     "Secrets committed to git history stay readable.",
     "Files created after `up`, or under Skip patterns, are not masked.",
+    "Hard links are found only by scanning the Workspace outside Skip patterns; a hard link under a Skip pattern or outside the Workspace is not masked.",
     "The agent can change Workspace files that later run on the host (Makefile, package.json, .git/hooks).",
     "Host Services can return sensitive data; the Host Browser, when enabled, exposes the host's whole network view and host files.",
     "The public internet stays open: the agent can send Workspace data to any public IP address (Netguard blocks the host and private networks, not exfiltration).",
@@ -42,6 +44,9 @@ class SessionPlan:
     project_rules: list[tuple[str, str]]
     session_run: list[str]
     warnings: list[str] = field(default_factory=list)
+    entries: list[Entry] = field(default_factory=list)
+    mask_sources: dict[str, str] = field(default_factory=dict)  # kind (file|dir) -> empty read-only source
+    errors: list[str] = field(default_factory=list)
     limits: list[str] = field(default_factory=lambda: list(LIMITS))
     result: str = "Ready"
     netguard_name: str | None = None
@@ -59,27 +64,32 @@ def session_name(workspace: Path) -> str:
     return f"asb-{slug[:30]}-{digest}"
 
 
-def _mount_arg(source: Path, target: str) -> str:
+def _csv(field_: str) -> str:
+    """One field of a docker --mount value: quoted only when it holds a comma, quote or newline."""
+    if any(c in field_ for c in ',"\n\r'):
+        return '"' + field_.replace('"', '""') + '"'
+    return field_
+
+
+def _mount_arg(source: Path | str, target: str, readonly: bool = False) -> str:
     quoted = str(source).replace('"', '""')
-    return f'type=bind,"source={quoted}",target={target}'
+    arg = f'type=bind,"source={quoted}",{_csv("target=" + target)}'
+    return arg + ",readonly" if readonly else arg
 
 
-def _external_git_warnings(workspace: Path) -> list[str]:
-    git = workspace / ".git"
-    if not git.is_file():
-        return []
-    try:
-        first = git.read_text(errors="replace").splitlines()[0]
-    except (OSError, IndexError):
-        first = ""
-    if first.startswith("gitdir:"):
-        target = (workspace / first.split(":", 1)[1].strip()).resolve()
-        if workspace not in (target, *target.parents):
-            return [
-                f".git points to {target}, outside the Workspace; it is not mounted, "
-                "so git will not work inside the Session"
-            ]
-    return []
+def mask_source_dir() -> Path:
+    """Where the empty read-only mask sources live. Never inside a Workspace."""
+    state = os.environ.get("XDG_STATE_HOME") or str(Path.home() / ".local" / "state")
+    return Path(state) / "agent-sandbox" / "masks"
+
+
+def _mask_mounts(entries: list[Entry], sources: dict[str, str]) -> list[str]:
+    args: list[str] = []
+    for e in entries:
+        if e.status == "MASKED":
+            target = "/workspace/" + e.path
+            args += ["--mount", _mount_arg(sources[e.kind], target, readonly=True)]
+    return args
 
 
 def _netguard_run(name: str, workspace: Path, platform: str) -> list[str]:
@@ -122,6 +132,17 @@ def plan(workspace: Path, config: Config, *, uid: int | None = None, gid: int | 
     platform = sys.platform if platform is None else platform
     ng_name = None if config.offline else f"{name}-netguard"
 
+    found = discover(workspace, config)
+    kinds = {e.kind for e in found.entries if e.status == "MASKED"}
+    root = mask_source_dir()
+    sources = {"file": str(root / "empty-file"), "dir": str(root / "empty-dir")}
+    sources = {k: v for k, v in sources.items() if k in kinds}
+    errors = list(found.errors)
+    real_root = Path(os.path.realpath(root))
+    if sources and (real_root == workspace or workspace in real_root.parents):
+        # an agent could otherwise fill the "empty" mask source through /workspace
+        errors.append(f"mask sources ({root}) are inside the Workspace; set XDG_STATE_HOME elsewhere")
+
     args = [
         "run", "-d",
         "--name", name,
@@ -139,15 +160,12 @@ def plan(workspace: Path, config: Config, *, uid: int | None = None, gid: int | 
         "--network", "none" if ng_name is None else f"container:{ng_name}",
         "--env", "HOME=/tmp",
         "--mount", _mount_arg(workspace, "/workspace"),
+        *_mask_mounts(found.entries, sources),
         "-w", "/workspace",
         IMAGE,
     ]
 
-    warnings = [
-        "Secret files are not masked yet: every file in the Workspace, including .env and "
-        ".git/config, is readable and writable by the agent.",
-    ]
-    warnings += _external_git_warnings(workspace)
+    warnings = list(found.warnings)
 
     return SessionPlan(
         workspace=str(workspace),
@@ -161,4 +179,8 @@ def plan(workspace: Path, config: Config, *, uid: int | None = None, gid: int | 
         netguard_image=None if ng_name is None else NETGUARD_IMAGE,
         netguard_run=None if ng_name is None else _netguard_run(ng_name, workspace, platform),
         netguard_rules=[] if ng_name is None else netguard_rules(),
+        entries=found.entries,
+        mask_sources=sources,
+        errors=errors,
+        result="Blocked" if errors else "Ready",
     )

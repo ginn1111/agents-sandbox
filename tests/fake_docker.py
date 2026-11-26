@@ -42,8 +42,9 @@ elif cmd == "build":
 elif cmd == "run":
     names = opt("--name")
     name = names[0] if names else None
-    if name and name in state.get("fail_run", []):
-        print("run refused", file=sys.stderr)
+    fail = state.get("fail_run")
+    if fail is True or (name and name in (fail or [])):  # True: refuse every run; a list: refuse those names
+        print("run refused: Error response from daemon: invalid mount config", file=sys.stderr)
         save()
         sys.exit(125)
     if name:
@@ -55,11 +56,25 @@ elif cmd == "run":
 elif cmd == "rm":
     state["containers"].pop(args[-1], None)
 elif cmd == "inspect":
-    c = state["containers"].get(args[-1])
+    name = args[-1]
+    c = state["containers"].get(name)
     if c is None:
         save()
         sys.exit(1)
-    print("false" if c.get("exited") else "true")
+    if "{{.State.Running}}" in opt("--format"):  # Netguard readiness: is it still running?
+        print("false" if c.get("exited") else "true")
+    else:  # `{{json .Mounts}}`: what the mask check reads
+        import csv
+        mounts = []
+        for v in [c["args"][n + 1] for n, a in enumerate(c["args"]) if a == "--mount"]:
+            f = dict(x.partition("=")[::2] for x in next(csv.reader([v])))
+            dest = f["target"]
+            if dest in state.get("drop_mounts", []):
+                continue
+            src = "/wrong/source" if dest in state.get("wrong_source_mounts", []) else f["source"]
+            rw = "readonly" not in f or dest in state.get("writable_mounts", [])
+            mounts.append({"Type": f["type"], "Source": src, "Destination": dest, "RW": rw})
+        print(json.dumps(mounts))
 elif cmd == "logs":
     print("netguard: fake log line", file=sys.stderr)
 elif cmd == "ps":

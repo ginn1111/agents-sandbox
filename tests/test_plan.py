@@ -71,9 +71,9 @@ def test_session_network_is_netguards_never_the_default_bridge(workspace):
     assert flag_values(make_plan(workspace, offline=True).session_run, "--network") == ["none"]
 
 
-def test_masking_gap_is_disclosed(workspace):
+def test_plan_no_longer_claims_masking_is_missing(workspace):
     p = make_plan(workspace)
-    assert any("not masked" in w.lower() for w in p.warnings)
+    assert not any("not masked yet" in w.lower() for w in p.warnings)
 
 
 def test_names_are_stable_and_distinct_per_workspace(home):

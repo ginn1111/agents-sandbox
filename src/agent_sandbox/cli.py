@@ -8,6 +8,7 @@ from pathlib import Path
 
 from .config import ConfigError, load_config
 from .netguard import IMAGE as NETGUARD_IMAGE
+from .masks import MaskError
 from .plan import IMAGE, plan
 from .render import render
 from .runtime import Docker, DockerError
@@ -43,6 +44,8 @@ def _plan_for(args):
 
 
 def _ensure_up(docker: Docker, p, out) -> bool:
+    if p.errors:  # blocked plan (e.g. a Secret file that cannot be masked): never touch Docker
+        raise MaskError("; ".join(p.errors))
     if docker.is_running(p.container_name):
         if p.netguard_name and not docker.container_running(p.netguard_name):
             raise DockerError(
@@ -82,6 +85,7 @@ def main(argv: list[str] | None = None, *, docker: list[str] | None = None) -> i
         if args.command == "check":
             p = _plan_for(args)
             print(json.dumps(p.to_dict(), indent=2) if args.json else render(p))
+            return 0 if p.result == "Ready" else 1
         elif args.command == "up":
             _ensure_up(d, _plan_for(args), sys.stdout)
         elif args.command == "attach":
@@ -106,7 +110,7 @@ def main(argv: list[str] | None = None, *, docker: list[str] | None = None) -> i
             print(f"Built {IMAGE}")
             d.build(NETGUARD_CONTEXT, NETGUARD_IMAGE)
             print(f"Built {NETGUARD_IMAGE}")
-    except (WorkspaceError, ConfigError, DockerError) as e:
+    except (WorkspaceError, ConfigError, DockerError, MaskError) as e:
         print(f"error: {e}", file=sys.stderr)
         return 1
     return 0
