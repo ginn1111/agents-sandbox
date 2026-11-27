@@ -29,7 +29,7 @@ Both `agent-sandbox` and `asb` are installed and run the same code.
 
 ### Linux
 
-Install Docker Engine and make sure your user can run `docker ps`. Nothing else is needed. The CLI adds `--add-host=host.docker.internal:host-gateway` to Netguard so Host Services can be named `host.docker.internal`.
+Install Docker Engine and make sure your user can run `docker ps`. Nothing else is needed, except `socat` if you want to use the [Host Browser](#host-browser). The CLI adds `--add-host=host.docker.internal:host-gateway` to Netguard so Host Services can be named `host.docker.internal`.
 
 ### macOS with Colima
 
@@ -45,7 +45,7 @@ Docker Desktop also works through its Docker context. The `docker` CLI is the on
 
 ```bash
 asb build            # builds the agent, Netguard and Portal publisher images (slow the first time)
-asb doctor           # Python, Docker daemon, the three images, each Host Service, the Host Browser command
+asb doctor           # Python, Docker daemon, the agent and Netguard images (Portal image: warning only), each Host Service, the Host Browser command
 asb check ~/src/app  # dry run: what is masked, what network, which limits apply
 asb up ~/src/app     # start the Session (does nothing if it is already running)
 asb attach ~/src/app # open herdr in the Session
@@ -164,7 +164,7 @@ Portals: `plannotator` (port 19432) and `hermes-dashboard` (port 9119).
 
 ### Netguard
 
-Each Session gets its own Netguard container, which holds the only `NET_ADMIN` capability. The Session joins its network namespace. The host and private, link-local and LAN ranges are blocked, DNS goes only to the configured resolver, and IPv6 is off. If Netguard cannot apply its rules or stops, the Session has no network, never an open one. `asb check` shows the network line; `asb doctor` checks the daemon and images.
+Each Session gets its own Netguard container, which holds the only `NET_ADMIN` capability. The Session joins its network namespace. The host and private, link-local and LAN ranges are blocked, DNS goes only to the IPv4 resolvers in Netguard's `/etc/resolv.conf` (the ones your Docker context provides), and IPv6 is off. If Netguard cannot apply its rules or stops, the Session has no network, never an open one. `asb check` shows the network line; `asb doctor` checks the daemon and images.
 
 Container hardening is fixed: read-only root filesystem, non-root user, all capabilities dropped (Netguard keeps only `NET_ADMIN`), `no-new-privileges`, never privileged, no Docker socket.
 
