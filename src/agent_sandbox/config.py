@@ -5,6 +5,8 @@ Unknown or invalid keys are rejected, never ignored.
 """
 from __future__ import annotations
 
+import copy
+import math
 import os
 import re
 from dataclasses import dataclass, field
@@ -12,6 +14,9 @@ from pathlib import Path
 from typing import Any
 
 import yaml
+
+from . import host_browser as _hb
+from . import host_services as _hs
 
 PROJECT_FILE = ".agent-sandbox.yaml"
 SOURCES = ("default", "global", "project", "cli")
@@ -31,6 +36,39 @@ DEFAULT_AGENTS = {
 }
 
 _MEMORY = re.compile(r"^[1-9][0-9]*[bkmg]?$", re.IGNORECASE)
+# Portal names become container-side identifiers and are typed on the command line.
+PORTAL_NAME = re.compile(r"^[a-z][a-z0-9-]{0,31}$")
+# Built-in Portal entries (ADR-0010). A config entry with the same name replaces one as a whole.
+DEFAULT_PORTALS = {
+    "plannotator": {
+        "port": 19432,
+        "env": {"PLANNOTATOR_REMOTE": "1", "PLANNOTATOR_PORT": "19432"},
+        "open": "/",
+    },
+    # ADR-0010, ADR-0020. The dashboard listens on 0.0.0.0, so Hermes requires a login: the CLI
+    # generates it once per Workspace. HERMES_WEB_DIST: the UI is built into the image, because
+    # the read-only root filesystem leaves Hermes nowhere to build it at start.
+    "hermes-dashboard": {
+        "port": 9119,
+        "command": ["hermes", "dashboard", "--host", "0.0.0.0", "--port", "9119", "--no-open"],
+        "env": {
+            "HERMES_DASHBOARD_BASIC_AUTH_USERNAME": "{generated}",
+            "HERMES_DASHBOARD_BASIC_AUTH_PASSWORD": "{generated}",
+            "HERMES_DASHBOARD_BASIC_AUTH_SECRET": "{generated}",
+            "HERMES_WEB_DIST": "/opt/hermes/src/hermes_cli/web_dist",
+        },
+        "login": {
+            "username": "HERMES_DASHBOARD_BASIC_AUTH_USERNAME",
+            "password": "HERMES_DASHBOARD_BASIC_AUTH_PASSWORD",
+        },
+        "open": "/",
+    },
+}
+# Agent names become Docker volume names and directory names, so keep them plain.
+AGENT_NAME = re.compile(r"^[a-z][a-z0-9_-]{0,31}$")
+ENV_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+# Set by the Session itself; an agent entry may not override them.
+RESERVED_ENV = {"HOME"}
 
 
 class ConfigError(ValueError):
@@ -56,6 +94,8 @@ class Config:
     portals: dict[str, dict[str, Any]]
     offline: bool
     loaded_files: list[str] = field(default_factory=list)
+    # agent name -> env for that agent only (ADR-0007). Absent when the agent has none.
+    agent_env: dict[str, dict[str, str]] = field(default_factory=dict)
     # (config key, value) for every setting that came from project config.
     project_rules: list[tuple[str, str]] = field(default_factory=list)
 
@@ -89,9 +129,13 @@ def _validate_resources(res: Any, label: str) -> dict[str, Any]:
             if not isinstance(v, (str, int)) or isinstance(v, bool) or not _MEMORY.match(str(v)):
                 raise ConfigError(f"{label}: resources.memory must look like 4g, 512m or a byte count")
             out[k] = str(v)
+        elif k == "pids_limit":
+            if isinstance(v, bool) or not isinstance(v, int) or v <= 0:
+                raise ConfigError(f"{label}: resources.pids_limit must be a positive integer")
+            out[k] = v
         else:
-            if isinstance(v, bool) or not isinstance(v, (int, float)) or v <= 0:
-                raise ConfigError(f"{label}: resources.{k} must be a positive number")
+            if isinstance(v, bool) or not isinstance(v, (int, float)) or not math.isfinite(v) or v <= 0:
+                raise ConfigError(f"{label}: resources.{k} must be a positive finite number")
             out[k] = v
     return out
 
@@ -122,7 +166,7 @@ def _validate_network(net: Any, label: str, source: str) -> dict[str, Any]:
         if source == "project":
             raise ConfigError(
                 f"{label}: network.host_browser cannot be set in project config; "
-                "enable it from global config or the CLI (ADR-0005, ADR-0008)"
+                "enable it from global config or the CLI (--host-browser) (ADR-0005, ADR-0008)"
             )
         if not isinstance(net["host_browser"], bool):
             raise ConfigError(f"{label}: network.host_browser must be true or false")
@@ -140,40 +184,106 @@ def _validate_network(net: Any, label: str, source: str) -> dict[str, Any]:
                     raise ConfigError(f"{label}: network.host_services[{i}] is missing '{req}'")
             if not isinstance(item["name"], str) or not isinstance(item["host"], str):
                 raise ConfigError(f"{label}: network.host_services[{i}] name and host must be strings")
+            for key, problem in (("name", _hs.name_error(item["name"])), ("host", _hs.host_error(item["host"]))):
+                if problem:
+                    raise ConfigError(f"{label}: network.host_services[{i}].{key} {problem}")
+            if any(s["name"] == item["name"] for s in services):
+                raise ConfigError(f"{label}: network.host_services name '{item['name']}' is listed more than once")
             _validate_port(item["port"], label, f"network.host_services[{i}].port")
+            reserved = _hb.reserved_error(item["name"], item["host"], item["port"])
+            if reserved:
+                raise ConfigError(f"{label}: network.host_services[{i}] {reserved}")
             services.append(dict(item))
         out["host_services"] = services
     return out
 
 
-def _validate_agents(agents: Any, label: str) -> dict[str, list[str]]:
+def _validate_agent_env(env: Any, label: str, key: str) -> dict[str, str]:
+    env = _expect_map(env, label, key)
+    out = {}
+    for k, v in env.items():
+        if not isinstance(k, str) or not ENV_NAME.fullmatch(k):
+            raise ConfigError(f"{label}: {key} has an invalid variable name {k!r}")
+        if k in RESERVED_ENV:
+            raise ConfigError(f"{label}: {key}.{k} is set by the Session and cannot be overridden")
+        if not isinstance(v, str) or "\0" in v:
+            raise ConfigError(f"{label}: {key}.{k} must be a string without NUL bytes")
+        out[k] = v
+    return out
+
+
+def _validate_agents(agents: Any, label: str) -> dict[str, dict[str, Any]]:
     agents = _expect_map(agents, label, "agents")
     out = {}
     for name, spec in agents.items():
+        if not isinstance(name, str) or not AGENT_NAME.fullmatch(name):
+            raise ConfigError(
+                f"{label}: agents.{name}: agent names must match {AGENT_NAME.pattern} "
+                "(they name the Agent volume)"
+            )
         spec = _expect_map(spec, label, f"agents.{name}")
         _reject_unknown(spec, {"command", "env"}, label, f"agents.{name}.")
         if "command" not in spec:
             raise ConfigError(f"{label}: agents.{name} is missing 'command'")
-        out[str(name)] = _validate_str_list(spec["command"], label, f"agents.{name}.command")
+        entry: dict[str, Any] = {"command": _validate_str_list(spec["command"], label, f"agents.{name}.command")}
+        if not entry["command"] or any("\0" in arg for arg in entry["command"]):
+            raise ConfigError(f"{label}: agents.{name}.command must contain a program and no NUL bytes")
+        if "env" in spec:
+            entry["env"] = _validate_agent_env(spec["env"], label, f"agents.{name}.env")
+        out[name] = entry
     return out
+
+
+def _validate_login(login: Any, spec: dict, label: str, name: str, source: str) -> None:
+    """`login` names the env variables `portal start` shows as the user name and password."""
+    key = f"portals.{name}.login"
+    login = _expect_map(login, label, key)
+    _reject_unknown(login, {"username", "password"}, label, f"{key}.")
+    env = spec.get("env", {})
+    for k in ("username", "password"):
+        var = login.get(k)
+        if not isinstance(var, str) or var not in env:
+            raise ConfigError(f"{label}: {key}.{k} must name a variable in portals.{name}.env")
+        if source == "project" and env[var] != "{generated}":
+            raise ConfigError(
+                f"{label}: {key}: {var} must be {{generated}} in project config; "
+                "Portal logins are not set from the project (ADR-0005, ADR-0010)")
+
+
+def _keep_generated(previous: dict | None, spec: dict, name: str) -> None:
+    """Project config may replace a Portal entry, but not a `{generated}` secret of the entry it
+    replaces (defaults or global config) with a literal: Portal secrets are never set from the
+    project (ADR-0005, ADR-0010). Leaving the variable out is allowed; the service then lacks it."""
+    if not previous:
+        return
+    env = spec.get("env", {})
+    for var, value in previous.get("env", {}).items():
+        if value == "{generated}" and var in env and env[var] != "{generated}":
+            raise ConfigError(
+                f"{PROJECT_FILE}: portals.{name}.env.{var} must stay {{generated}}; "
+                "Portal secrets cannot be set in project config (ADR-0005, ADR-0010)")
 
 
 def _validate_portals(portals: Any, label: str, source: str) -> dict[str, dict[str, Any]]:
     portals = _expect_map(portals, label, "portals")
     out = {}
     for name, spec in portals.items():
+        if not isinstance(name, str) or not PORTAL_NAME.match(name):
+            raise ConfigError(f"{label}: portals.{name}: Portal names must match {PORTAL_NAME.pattern}")
         spec = _expect_map(spec, label, f"portals.{name}")
-        _reject_unknown(spec, {"port", "command", "env", "open", "secrets"}, label, f"portals.{name}.")
-        if "secrets" in spec and source == "project":
-            raise ConfigError(
-                f"{label}: portals.{name}.secrets cannot be set in project config (ADR-0005, ADR-0010)"
-            )
+        _reject_unknown(spec, {"port", "command", "env", "open", "login"}, label, f"portals.{name}.")
         if "port" not in spec:
             raise ConfigError(f"{label}: portals.{name} is missing 'port'")
         _validate_port(spec["port"], label, f"portals.{name}.port")
         if "command" in spec:
             _validate_str_list(spec["command"], label, f"portals.{name}.command")
-        out[str(name)] = dict(spec)
+        if "env" in spec:
+            _validate_agent_env(spec["env"], label, f"portals.{name}.env")
+        if "login" in spec:
+            _validate_login(spec["login"], spec, label, name, source)
+        if "open" in spec and (not isinstance(spec["open"], str) or not spec["open"].startswith("/")):
+            raise ConfigError(f"{label}: portals.{name}.open must be a URL path starting with '/'")
+        out[name] = dict(spec)
     return out
 
 
@@ -253,7 +363,7 @@ def load_config(
         host_services=[],
         host_browser=False,
         agents={k: list(v) for k, v in DEFAULT_AGENTS.items()},
-        portals={},
+        portals=copy.deepcopy(DEFAULT_PORTALS),
         offline=False,
         loaded_files=loaded,
     )
@@ -277,14 +387,25 @@ def load_config(
                 cfg.project_rules.append(("network.host_services", f"{svc['name']} {svc['host']}:{svc['port']}"))
         if "host_browser" in net:
             cfg.host_browser = net["host_browser"]
-        for name, command in layer.get("agents", {}).items():
-            cfg.agents[name] = command
+        for name, spec in layer.get("agents", {}).items():
+            cfg.agents[name] = spec["command"]
+            cfg.agent_env.pop(name, None)  # the entry is replaced as a whole, env included
+            if spec.get("env"):
+                cfg.agent_env[name] = dict(spec["env"])
             if source == "project":
-                cfg.project_rules.append((f"agents.{name}", " ".join(command)))
+                cfg.project_rules.append((f"agents.{name}", " ".join(spec["command"])))
+                for key in spec.get("env", {}):  # names only: values may be tokens
+                    cfg.project_rules.append((f"agents.{name}.env", key))
         for name, spec in layer.get("portals", {}).items():
+            if source == "project":
+                _keep_generated(cfg.portals.get(name), spec, name)
             cfg.portals[name] = spec
             if source == "project":
                 cfg.project_rules.append((f"portals.{name}", f"port {spec['port']}"))
+                if spec.get("command"):  # a project can make the Session run a program: show it
+                    cfg.project_rules.append((f"portals.{name}.command", " ".join(spec["command"])))
+                for key in spec.get("env", {}):  # names only: values may be tokens
+                    cfg.project_rules.append((f"portals.{name}.env", key))
         if "offline" in layer:
             cfg.offline = layer["offline"]
     return cfg

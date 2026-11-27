@@ -1,0 +1,67 @@
+#!/usr/bin/python3 -I
+"""Launch an agent without evaluating shell commands or losing its selected HOME."""
+import json
+import os
+import re
+import sys
+import tempfile
+from pathlib import Path
+
+CONFIG = "/tmp/asb-agent-launch.json"
+SHIPPED = {
+    name: (f"/opt/agents/bin-wrapped/{name}", f"/opt/agents/bin/{name}")
+    for name in ("claude", "codex", "omp")
+}
+SHIPPED["hermes"] = ("/opt/hermes/venv/bin/hermes",)
+
+
+def configure():
+    config = json.load(sys.stdin)
+    if not isinstance(config, dict):
+        raise ValueError
+    with tempfile.NamedTemporaryFile(dir="/tmp", delete=False, mode="w", encoding="utf-8") as f:
+        try:
+            json.dump(config, f)
+            f.flush()
+            os.replace(f.name, CONFIG)
+        finally:
+            if os.path.exists(f.name):
+                os.unlink(f.name)
+
+
+def main(argv):
+    invoked = Path(argv[0]).name
+    if invoked in SHIPPED:
+        # These shortcuts are stock commands, including callers such as the Dashboard and Kanban.
+        name, command, extra_env = invoked, [invoked, *argv[1:]], {}
+    else:
+        if argv[1:] == ["--configure"]:
+            configure()
+            return
+        if len(argv) < 2 or not re.fullmatch(r"[a-z][a-z0-9_-]{0,31}", argv[1]):
+            sys.exit("usage: asb-agent AGENT [ARG ...]")
+        name = argv[1]
+        with open(CONFIG, encoding="utf-8") as f:
+            entry = json.load(f).get(name)
+        if entry is None:
+            sys.exit(f"asb: agent '{name}' is not configured in this Session")
+        command, extra_env = [*entry["command"], *argv[2:]], entry["env"]
+
+    env = {**os.environ, **extra_env, "HOME": f"/agents/{name}"}
+    program = command[0]
+    if program in SHIPPED:
+        # Bypass our PATH shortcuts: they would reset HOME to the stock agent's home.
+        program = next((p for p in SHIPPED[program] if os.access(p, os.X_OK)), "")
+        if not program:
+            raise FileNotFoundError
+    os.execvpe(program, [program, *command[1:]], env)
+
+
+if __name__ == "__main__":
+    try:
+        main(sys.argv)
+    except FileNotFoundError:
+        print("asb: agent executable or launch configuration not found", file=sys.stderr)
+        sys.exit(127)
+    except (OSError, KeyError, TypeError, ValueError):
+        sys.exit("asb: could not read, prepare, or run the agent launch configuration")

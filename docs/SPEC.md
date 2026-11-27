@@ -38,11 +38,11 @@ The README and `check` output must state these limits plainly. Never claim prote
 | `asb shell [DIR]` | Open an interactive Fish shell at `/workspace` in the running Session, without attaching to the Watcher. If no Session is running, exit with an error and tell the user to run `asb up`. Do not start or enable a Host Service, Host Browser, or Portal. |
 | `asb service enable\|disable <name> [DIR]` | Turn one configured Host Service on or off in the running Session's Netguard, without restarting either container. Activation lasts for the current Session only. |
 | `asb portal start\|stop\|restart\|status <name> [DIR]` | Control one configured Portal in the running Session (§8). |
-| `asb browser enable\|disable [DIR]` | Turn the Host Browser on or off in the running Session, if global config or the CLI made it available (§6). |
+| `asb browser enable\|disable [DIR] [--host-browser]` | Turn the Host Browser on or off in the running Session, if global config or `--host-browser` made it available (§6). `enable` opens `host.docker.internal:9222` in Netguard through the helper (ADR-0021). `--host-browser` is also accepted by `check`, `up`, `attach` and `doctor`. |
 | `asb down [DIR]` | Stop and remove the Session and its Netguard. Agent volumes are kept. |
 | `asb ls` | List running Sessions with their Workspace and Portal URLs. |
 | `asb check [DIR]` | Dry run: no container starts. See §5 for the output. |
-| `asb doctor` | Check Docker and Colima, Python, the images, iptables/nft support and `host.docker.internal`. Print the Host Browser launch command. |
+| `asb doctor [DIR]` | Check Docker and Colima, Python, the images, iptables/nft support and `host.docker.internal`. Report whether each configured Host Service answers (from the Session when it is enabled in a running Session, otherwise from the host). Print the Host Browser launch command. |
 | `asb build` | Build the agent and Netguard images. |
 | `asb update [--only cli\|image\|integrations] [--rollback]` | See ADR-0012. |
 
@@ -126,7 +126,7 @@ Result: Ready
   - DNS is allowed only to the configured resolver.
   - `--add-host=host.docker.internal:host-gateway` is set on Linux; a hostname mapping alone does not grant access.
 - **Host Services:** defined as `host:port` in config. Netguard permits only explicitly activated entries. The agent never gets host credentials through them. Examples: DBX Web (`DBX_WEB_URL`), an LLM gateway.
-- **Host Browser (ADR-0008, ADR-0013):** off by default. Settings come only from global config or the CLI; activation requires the explicit CLI command. `check` warns when it is enabled. You start Chrome yourself with a dedicated `--user-data-dir`; `doctor` prints the command. Agents control it with `chrome-devtools-mcp`.
+- **Host Browser (ADR-0008, ADR-0013, ADR-0021):** off by default. Made available only by global config (`network.host_browser: true`) or `--host-browser`; project config setting the key is rejected. Activation requires `asb browser enable`, which opens `host.docker.internal:9222` (one TCP port) through the Netguard helper. `check`, `up` and `attach` warn on every Session where it is available. You start Chrome yourself with a dedicated `--user-data-dir`; `doctor` prints the command and, on Linux, a `socat` relay bound to the Docker gateway address. Agents control it with `asb-chrome-mcp`, which runs the pinned `chrome-devtools-mcp` against the host by IP address.
 - **`--offline`:** Docker `none` network. No Host Services or Portals.
 
 ## 7. Image contents
@@ -140,16 +140,16 @@ Result: Ready
 
 - A Portal is defined in config as a container port, an optional background `command`, optional env, and a URL path.
 - Only explicitly started Portals are published to the host at `127.0.0.1` on a randomly allocated host port. Stopping a Portal releases its host port; the URL may change the next time it starts. `start` prints the current URL and any generated login; `status` shows the current URL while published. The CLI never opens a browser.
-- Each Portal supports `start`, `stop`, `restart`, and `status` without restarting the Session or Netguard (ADR-0013). The CLI manages the service process only if it started that process through the configured `command`; otherwise it manages host publication only. `status` reports publication separately from service state.
+- Each Portal supports `start`, `stop`, `restart`, and `status` without restarting the Session or Netguard (ADR-0013). Publication is live, through one publisher container per started Portal (ADR-0018). The CLI manages the service process only if it started that process through the configured `command`; otherwise it manages host publication only. `status` reports publication separately from service state.
 - Portal activation belongs to the current Session. `asb down` unpublishes its Portals and releases their host ports. On the next `asb up`, every Portal starts off and must be started explicitly again. Configuration and `{generated}` logins persist across Sessions; the CLI stores generated secrets per Workspace, outside the Workspace.
 - Built-in entries:
   - **plannotator**, using `PLANNOTATOR_REMOTE=1` and port 19432;
-  - **hermes-dashboard**, using `--host 0.0.0.0` with generated basic-auth credentials. `HERMES_KANBAN_BOARD` is set to the Workspace slug. Its Kanban board is for Hermes only.
+  - **hermes-dashboard**, using `--host 0.0.0.0` with generated basic-auth credentials (`{generated}`, created once per Workspace, kept in `$XDG_STATE_HOME/agent-sandbox/portal-secrets/`, printed by `portal start`, never by `status`, `ls` or `check`). Its Kanban board is for Hermes only: each Workspace has its own Kanban home volume `agent-sandbox-kanban-<slug>` (`HERMES_KANBAN_HOME=/kanban`) and `HERMES_KANBAN_BOARD` is set to the Workspace slug (ADR-0020).
 
 ## 9. Configuration (ADR-0005)
 
 - Global config: `~/.config/agent-sandbox/config.yaml`. Project config: `.agent-sandbox.yaml`.
-- Precedence: CLI, then project, then global, then defaults. Project config is trusted, with two exceptions it can't change: the Host Browser and Portal secrets.
+- Precedence: CLI, then project, then global, then defaults. Project config is trusted, but cannot select the [Host Browser (ADR-0021)](adr/0021-host-browser-through-netguard-helper-by-ip.md). Portal login variables in project config must be `{generated}`, and a project Portal cannot replace a built-in or global `{generated}` value with a literal, even if it omits the `login` key. See the [Hermes dashboard decision (ADR-0020)](adr/0020-hermes-dashboard-login-and-per-workspace-kanban-home.md).
 - `check` lists every rule that came from project config.
 - Invalid or unknown keys are rejected, never ignored.
 
@@ -188,7 +188,7 @@ portals: { }                      # see ADR-0010
 - The agent can change Workspace files that later run on the host.
 - Host Services can return sensitive data. The Host Browser, when enabled, exposes the host's whole network view and host files.
 - Containers share the host kernel.
-- Agent credentials in Agent volumes are readable by the agent and by anything it runs.
+- Agent credentials in Agent volumes are readable by the agent and by anything it runs, including other processes in the same Session. Writable Agent and mise volumes are shared across Workspaces and can carry changes into later Sessions.
 - The inner herdr can set the terminal title and request clipboard writes (OSC 52). Turn off clipboard writes from programs in your terminal.
 
 ## 12. Tests
