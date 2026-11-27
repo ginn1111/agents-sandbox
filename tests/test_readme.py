@@ -162,6 +162,8 @@ def test_project_config_exceptions_are_documented_and_true(tmp_path):
         load_config(ws, global_path=tmp_path / "none.yaml")
     low = norm(README).lower()
     assert "project config cannot" in low and "host browser" in low
+    # `portals.<name>.secrets` was removed from the config schema; the README must not document it.
+    assert "portals.<name>.secrets" not in README
 
 
 def test_default_patterns_in_the_readme_are_the_ones_in_the_code():
